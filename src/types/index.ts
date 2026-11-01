@@ -153,6 +153,8 @@ export interface LiveSourceSite {
   group?: string;
   headers?: Record<string, string>;
   builtin?: boolean;
+  /** 秀场 / 成人面板源：绿色模式下整源隐藏。 */
+  adult?: boolean;
 }
 
 export interface LivePlatform {

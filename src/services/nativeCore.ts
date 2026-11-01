@@ -1,7 +1,14 @@
 // 本地抓取服务的客户端封装。
 //
-// 所有跨域抓取、规则解析、m3u8 去广告都在 server/ 里完成，前端只发同源请求。
-// 统一在这里处理「服务不可用」的提示，避免每个调用点各写一遍。
+// 部署形态有两种：
+// 1. `npm run dev`：Vite 插件把 /api/* 挂在同一个端口上，走同源相对路径；
+// 2. Cloudflare Pages 等静态托管：页面没有后端，Cloudflare 对静态资源的
+//    非 GET 请求会直接回 405，因此必须显式指向用户本机的抓取服务
+//    （默认 http://127.0.0.1:8788，由 `npm run serve` 启动）。
+//
+// 全站所有抓取、规则解析、m3u8 去广告都在这台本机服务里完成，
+// 浏览器只负责发一次跨源请求；服务端已放开 CORS 与 Private Network 预检，
+// 因此不会出现浏览器直连站点被打 403 的情况。
 
 export interface NativeResponse<T> {
   ok: boolean;
@@ -19,7 +26,70 @@ export class NativeCoreError extends Error {
   }
 }
 
+const BASE_KEY = 'duanju_native_core_base_v1';
+/** 默认本地服务地址（`npm run serve` 的默认端口）。 */
+export const DEFAULT_CORE_BASE = 'http://127.0.0.1:8788';
+
 let healthPromise: Promise<boolean> | null = null;
+let healthState: { ok: boolean; at: number } | null = null;
+const HEALTH_TTL = 15000;
+
+function isLocalHostName(host: string): boolean {
+  return (
+    !host ||
+    host === 'localhost' ||
+    host === '127.0.0.1' ||
+    host === '0.0.0.0' ||
+    host === '[::1]' ||
+    host === '::1' ||
+    host.endsWith('.localhost')
+  );
+}
+
+/** 当前页面是否就跑在本地（dev / 本机托管）。 */
+export function isLocalPage(): boolean {
+  if (typeof window === 'undefined') return true;
+  return isLocalHostName(window.location.hostname);
+}
+
+function readStoredBase(): string | null {
+  try {
+    return localStorage.getItem(BASE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 抓取服务基地址。
+ * - 本地页面：默认空字符串 = 同源相对路径（dev 中间件直接可用）
+ * - 远程页面：默认 http://127.0.0.1:8788
+ * 用户手动设置过的地址优先。
+ */
+export function getCoreBase(): string {
+  const stored = readStoredBase();
+  if (stored !== null) return stored.replace(/\/+$/, '');
+  return isLocalPage() ? '' : DEFAULT_CORE_BASE;
+}
+
+/** 设置抓取服务地址；传空字符串表示「跟随当前站点同源」。 */
+export function setCoreBase(base: string): void {
+  const value = String(base || '').trim().replace(/\/+$/, '');
+  try {
+    if (value) localStorage.setItem(BASE_KEY, value);
+    else localStorage.removeItem(BASE_KEY);
+  } catch {
+    /* localStorage 不可用时按默认走 */
+  }
+  healthPromise = null;
+  healthState = null;
+}
+
+/** 把 /api/xxx 拼成完整地址（远程部署时必须带上本机服务的前缀）。 */
+export function coreURL(path: string): string {
+  const base = getCoreBase();
+  return `${base}${path.startsWith('/') ? path : `/${path}`}`;
+}
 
 function encodeHeaderToken(headers?: Record<string, string>): string {
   if (!headers) return '';
@@ -37,40 +107,97 @@ function encodeHeaderToken(headers?: Record<string, string>): string {
   }
 }
 
-/** 服务端是否可用（首次探测后缓存，失败 10 秒后允许重试）。 */
+function encodePayload(payload: unknown): string {
+  const json = JSON.stringify(payload ?? {});
+  return btoa(unescape(encodeURIComponent(json)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+/** 服务端是否可用（结果缓存 15 秒，force 时立即重测）。 */
 export function isCoreOnline(force = false): Promise<boolean> {
-  if (force) healthPromise = null;
-  if (!healthPromise) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 4000);
-    healthPromise = fetch('/api/health', { signal: controller.signal })
-      .then((response) => response.ok)
-      .catch(() => false)
-      .finally(() => clearTimeout(timer));
-    healthPromise.then((ok) => {
-      if (!ok) {
-        healthPromise = null;
-      }
-    });
+  const now = Date.now();
+  if (!force && healthState && now - healthState.at < HEALTH_TTL) {
+    return Promise.resolve(healthState.ok);
   }
+  if (!force && healthPromise) return healthPromise;
+  if (force) healthPromise = null;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 4000);
+  healthPromise = fetch(coreURL('/api/health'), {
+    signal: controller.signal,
+    mode: 'cors',
+    cache: 'no-store',
+  })
+    .then((response) => response.ok)
+    .catch(() => false)
+    .then((ok) => {
+      healthState = { ok, at: Date.now() };
+      return ok;
+    })
+    .finally(() => {
+      clearTimeout(timer);
+      healthPromise = null;
+    });
   return healthPromise;
 }
 
+const OFFLINE_HINT = `未连接本地抓取服务（${DEFAULT_CORE_BASE}），请在自己的电脑上运行 npm run serve 后重试`;
+
 async function post<T = any>(path: string, body: unknown): Promise<T> {
+  const url = coreURL(path);
   let response: Response;
   try {
-    response = await fetch(path, {
+    response = await fetch(url, {
       method: 'POST',
+      mode: 'cors',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body ?? {}),
     });
-  } catch (error: any) {
+  } catch {
+    throw new NativeCoreError(OFFLINE_HINT, true);
+  }
+
+  // 静态托管（Cloudflare Pages）或某些反代会把 POST 打回 405/404/501，
+  // 此时退回 GET + payload 查询串，服务端两种形态都认。
+  if (response.status === 405 || response.status === 501 || response.status === 404) {
+    const token = encodePayload(body);
+    if (token.length < 6000) {
+      try {
+        const retried = await fetch(`${url}${url.includes('?') ? '&' : '?'}payload=${token}`, {
+          method: 'GET',
+          mode: 'cors',
+          cache: 'no-store',
+        });
+        if (retried.ok) {
+          const payload = (await retried.json()) as NativeResponse<T>;
+          if (payload && payload.ok !== false) return payload as unknown as T;
+          throw new NativeCoreError(payload?.error || '请求失败');
+        }
+        response = retried;
+      } catch (error) {
+        if (error instanceof NativeCoreError) throw error;
+        throw new NativeCoreError(OFFLINE_HINT, true);
+      }
+    }
+  }
+
+  if (!response.ok) {
+    let detail = '';
+    try {
+      detail = (await response.text()).slice(0, 120);
+    } catch {
+      /* 忽略读取失败 */
+    }
     throw new NativeCoreError(
-      '本地抓取服务未启动，请运行 npm run dev 或 npm run serve',
-      true
+      response.status === 404 || response.status === 405
+        ? `抓取服务未就绪（HTTP ${response.status}）。部署在 Cloudflare Pages 时请在本机运行 npm run serve，页面会自动连接 ${DEFAULT_CORE_BASE}`
+        : `服务返回 ${response.status}${detail ? `：${detail}` : ''}`
     );
   }
-  if (!response.ok) throw new NativeCoreError(`服务返回 ${response.status}`);
+
   const payload = (await response.json()) as NativeResponse<T>;
   if (!payload || payload.ok === false) {
     throw new NativeCoreError(payload?.error || '请求失败');
@@ -81,50 +208,43 @@ async function post<T = any>(path: string, body: unknown): Promise<T> {
 export const nativeCore = {
   post,
 
-  /** m3u8 代理地址：服务端改写分片、按开关去广告。 */
-  hlsURL(url: string, options: { referer?: string; headers?: Record<string, string>; adBlock?: boolean } = {}) {
-    if (!url) return '';
-    const params = new URLSearchParams();
-    params.set('u', url);
-    if (options.referer) params.set('r', options.referer);
-    const token = encodeHeaderToken(options.headers);
-    if (token) params.set('h', token);
-    if (options.adBlock === false) params.set('ad', '0');
-    return `/api/hls?${params.toString()}`;
+  /** 简单 GET（收藏夹读取这类只读接口）。 */
+  async get<T = any>(path: string): Promise<T> {
+    const url = coreURL(path);
+    let response: Response;
+    try {
+      response = await fetch(url, { mode: 'cors', cache: 'no-store' });
+    } catch {
+      throw new NativeCoreError(OFFLINE_HINT, true);
+    }
+    if (!response.ok) throw new NativeCoreError(`服务返回 ${response.status}`);
+    const payload = (await response.json()) as NativeResponse<T>;
+    if (!payload || payload.ok === false) {
+      throw new NativeCoreError(payload?.error || '请求失败');
+    }
+    return payload as unknown as T;
   },
 
-  /** 分片 / mp4 直链代理地址。 */
-  mediaURL(url: string, options: { referer?: string; headers?: Record<string, string> } = {}) {
-    if (!url) return '';
-    const params = new URLSearchParams();
-    params.set('u', url);
-    if (options.referer) params.set('r', options.referer);
-    const token = encodeHeaderToken(options.headers);
-    if (token) params.set('h', token);
-    return `/api/media?${params.toString()}`;
+  /** 当前使用的抓取服务地址（空字符串代表同源）。 */
+  get base() {
+    return getCoreBase();
   },
+  setBase: setCoreBase,
+  isLocalPage,
 
-  /** 按媒体类型自动选择代理入口。 */
-  playURL(url: string, options: { referer?: string; headers?: Record<string, string>; adBlock?: boolean } = {}) {
-    if (!url) return '';
-    return /\.m3u8(\?|#|$)/i.test(url)
-      ? this.hlsURL(url, options)
-      : this.mediaURL(url, options);
-  },
-
-  /**
-   * 经服务端抓任意文本（订阅 JSON / 页面 HTML）。
-   * 浏览器直连会被 CORS 拦、拿不到真正 Content-Type，统一走 /api/proxy。
-   */
+  /** 通过本地服务拉任意文本（订阅 JSON / 网页 HTML），绕过浏览器 CORS。 */
   async fetchText(url: string, referer = ''): Promise<string> {
     const params = new URLSearchParams();
     params.set('u', url);
     if (referer) params.set('r', referer);
     let response: Response;
     try {
-      response = await fetch(`/api/proxy?${params.toString()}`);
+      response = await fetch(coreURL(`/api/proxy?${params.toString()}`), {
+        mode: 'cors',
+        cache: 'no-store',
+      });
     } catch {
-      throw new NativeCoreError('本地抓取服务未启动，请运行 npm run dev 或 npm run serve', true);
+      throw new NativeCoreError(OFFLINE_HINT, true);
     }
     if (!response.ok) {
       let message = `抓取失败（${response.status}）`;
@@ -137,5 +257,47 @@ export const nativeCore = {
       throw new NativeCoreError(message);
     }
     return response.text();
+  },
+
+  /** 拉取订阅并解析成站源草稿（一次请求完成，避免二次 POST 被拦）。 */
+  async subscribe(url: string): Promise<{ drafts: any[]; count: number; finalURL?: string }> {
+    return post('/api/source/subscribe', { url });
+  },
+
+  /** m3u8 代理地址：服务端改写分片、按开关去广告。 */
+  hlsURL(
+    url: string,
+    options: { referer?: string; headers?: Record<string, string>; adBlock?: boolean } = {}
+  ) {
+    if (!url) return '';
+    const params = new URLSearchParams();
+    params.set('u', url);
+    if (options.referer) params.set('r', options.referer);
+    const token = encodeHeaderToken(options.headers);
+    if (token) params.set('h', token);
+    if (options.adBlock === false) params.set('ad', '0');
+    return coreURL(`/api/hls?${params.toString()}`);
+  },
+
+  /** 分片 / mp4 直链代理地址。 */
+  mediaURL(url: string, options: { referer?: string; headers?: Record<string, string> } = {}) {
+    if (!url) return '';
+    const params = new URLSearchParams();
+    params.set('u', url);
+    if (options.referer) params.set('r', options.referer);
+    const token = encodeHeaderToken(options.headers);
+    if (token) params.set('h', token);
+    return coreURL(`/api/media?${params.toString()}`);
+  },
+
+  /** 按媒体类型自动选择代理入口。 */
+  playURL(
+    url: string,
+    options: { referer?: string; headers?: Record<string, string>; adBlock?: boolean } = {}
+  ) {
+    if (!url) return '';
+    return /\.m3u8(\?|#|$)/i.test(url)
+      ? this.hlsURL(url, options)
+      : this.mediaURL(url, options);
   },
 };

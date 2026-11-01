@@ -42,10 +42,11 @@ export const liveService = {
     }
   },
 
-  async platforms(sourceId: string): Promise<LivePlatform[]> {
+  async platforms(sourceId: string, greenMode = false): Promise<LivePlatform[]> {
     const response = await nativeCore.post<any>('/api/live/platforms', {
       sources: customPayload(),
       source: sourceId,
+      greenMode,
     });
     return (response.platforms || []) as LivePlatform[];
   },

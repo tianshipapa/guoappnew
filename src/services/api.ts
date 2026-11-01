@@ -38,7 +38,7 @@ export interface ResolvedSource {
 }
 
 /** 有原生实现的站源（其余走示例数据兜底，避免整站空白）。 */
-const NATIVE_SOURCES = new Set(['a123', 'ikanbot', 'wangye']);
+const NATIVE_SOURCES = new Set(['a123', 'ikanbot', 'wangye', 'guipian', 'hanxiaoquan']);
 
 /** 「网页」聚合源：远程订阅的 XBPQ 规则，首次用时拉取并缓存。 */
 const WANGYE_CONFIG_URL =
@@ -51,10 +51,8 @@ async function wangyePayload() {
   if (wangyePending) return wangyePending;
   wangyePending = (async () => {
     try {
-      const response = await fetch(`/api/proxy?u=${encodeURIComponent(WANGYE_CONFIG_URL)}`);
-      if (!response.ok) throw new Error(`订阅拉取失败 ${response.status}`);
-      const text = await response.text();
-      const result = await nativeCore.post<any>('/api/source/import', { content: text });
+      // 一次请求完成「拉订阅 + 解析规则」，全程在本机抓取服务里做
+      const result = await nativeCore.subscribe(WANGYE_CONFIG_URL);
       const draft = (result.drafts || [])[0];
       if (!draft) throw new Error('订阅里没有可识别的 XBPQ 规则');
       wangyePayloadCache = {
@@ -203,11 +201,8 @@ export const apiService = {
       }
     }
 
-    // 兜底：示例数据（无服务端实现的站源走这里）
-    let pool = SAMPLE_DRAMAS.filter((d) => {
-      if (sourceId === 'hongguo' || sourceId === 'hongguoxin') return true;
-      return d.source === sourceId || d.source === 'hongguo';
-    });
+    // 兜底：示例数据（本机服务不可达时保证界面不空白）
+    let pool = SAMPLE_DRAMAS.filter((d) => d.source === sourceId || sourceId === 'wangye');
     if (category && category !== 'recommend') {
       pool = pool.filter((d) => d.category === category || d.tags.some((t) => t.includes(category)));
     }
@@ -274,7 +269,7 @@ export const apiService = {
     const lower = q.toLowerCase();
     let pool = SAMPLE_DRAMAS;
     if (sourceId && sourceId !== 'all') {
-      pool = pool.filter((d) => d.source === sourceId || d.source === 'hongguo');
+      pool = pool.filter((d) => d.source === sourceId || sourceId === 'wangye');
     }
     return pool.filter(
       (d) =>
@@ -407,7 +402,7 @@ export const apiService = {
       SAMPLE_DRAMAS.find((d) => d.id === dramaId) ||
       SAMPLE_DRAMAS.flatMap((d) => d.peers || []).find((p) => p.id === dramaId) || {
         id: dramaId,
-        source: source || 'hongguo',
+        source: source || 'wangye',
         sourceName: sourceNameOf(source),
         title: '影片详情',
         description: '暂无更多详情介绍',
@@ -555,6 +550,20 @@ export const apiService = {
   async importSources(content: string): Promise<CustomSourceSite[]> {
     const response = await nativeCore.post<any>('/api/source/import', { content });
     return (response.drafts || []) as CustomSourceSite[];
+  },
+
+  /** 远程订阅地址导入：抓取 + 解析都在本机服务里一次完成（无需前端直连站点）。 */
+  async subscribeSources(url: string): Promise<{
+    drafts: CustomSourceSite[];
+    finalURL?: string;
+    preview?: string;
+  }> {
+    const response = await nativeCore.subscribe(url);
+    return {
+      drafts: (response.drafts || []) as CustomSourceSite[],
+      finalURL: response.finalURL,
+      preview: (response as any).preview,
+    };
   },
 
   /** 搜索联想（本地拼音匹配示例库 + 最近目录）。 */

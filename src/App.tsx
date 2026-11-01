@@ -23,6 +23,7 @@ import {
   FollowStatus,
 } from './types';
 import { apiService } from './services/api';
+import { libraryService } from './services/library';
 import { BUILTIN_SOURCES } from './data/sources';
 import {
   loadUserSettings,
@@ -38,6 +39,7 @@ import {
   loadCustomSources,
   saveCustomSource,
   deleteCustomSource,
+  clearCustomSources,
   loadSourceVisibility,
   saveSourceVisibility,
   loadLastActiveSource,
@@ -94,6 +96,25 @@ export const App: React.FC = () => {
       isMounted = false;
     };
   }, [currentSource]);
+
+  // 收藏夹 / 播放记录：优先用本机服务上的共享库（换浏览器也能续播），
+  // 服务没起来就继续用 localStorage 镜像。
+  useEffect(() => {
+    let alive = true;
+    libraryService
+      .load()
+      .then((snapshot) => {
+        if (!alive) return;
+        setFavorites(snapshot.favorites);
+        setHistory(snapshot.history);
+      })
+      .catch(() => {
+        /* load 内部已回落 localStorage */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   // Compute all available sources
   const allSources: SourceSite[] = [
@@ -187,11 +208,20 @@ export const App: React.FC = () => {
     setIsSearchOpen(true);
   };
 
-  // Select Drama
+  // Select Drama：没显式指定进度时，按播放记录自动续播
   const handleSelectDrama = (drama: Drama, initialIdx?: number, initialPos?: number) => {
+    const record = history.find((h) => h.id === drama.id && h.source === drama.source);
     setSelectedDrama(drama);
-    setResumeIndex(initialIdx);
-    setResumePosition(initialPos);
+    setResumeIndex(initialIdx ?? record?.index);
+    setResumePosition(initialPos ?? record?.position);
+  };
+
+  // 详情加载后回填真实集数 / 封面（列表卡片本身不带集数）
+  const handleDramaResolved = (resolved: Drama) => {
+    setSelectedDrama((prev) => {
+      if (!prev || prev.id !== resolved.id || prev.source !== resolved.source) return prev;
+      return { ...prev, ...resolved };
+    });
   };
 
   // Toggle Favorite
@@ -210,18 +240,35 @@ export const App: React.FC = () => {
     };
     const { favorites: nextFavs } = toggleFavorite(item);
     setFavorites(nextFavs);
+    void libraryService.toggleFavorite(item).then((snapshot) => {
+      if (snapshot) setFavorites(snapshot.favorites);
+    });
   };
 
   // Update Favorite Status
   const handleUpdateFavoriteStatus = (id: string, source: string, status: FollowStatus) => {
     const updated = updateFavoriteStatus(id, source, status);
     setFavorites(updated);
+    const target = updated.find((item) => item.id === id && item.source === source);
+    if (target) {
+      void libraryService.updateFavoriteStatus(target, status).then((snapshot) => {
+        if (snapshot) setFavorites(snapshot.favorites);
+      });
+    }
   };
 
   // Delete Favorite items
   const handleDeleteFavorites = (keys: { id: string; source: string }[]) => {
     const updated = removeFavoriteItems(keys);
     setFavorites(updated);
+    void libraryService
+      .remove(
+        'favorites',
+        keys.map((k) => `${k.source}|${k.id}`)
+      )
+      .then((snapshot) => {
+        if (snapshot) setFavorites(snapshot.favorites);
+      });
   };
 
   // Progress update from VideoPlayer
@@ -242,27 +289,40 @@ export const App: React.FC = () => {
     };
     const updated = saveHistoryItem(historyEntry);
     setHistory(updated);
+    void libraryService.putHistory(historyEntry);
   };
 
   // Delete History items
   const handleDeleteHistory = (keys: { id: string; source: string }[]) => {
     const updated = removeHistoryItems(keys);
     setHistory(updated);
+    void libraryService
+      .remove(
+        'history',
+        keys.map((k) => `${k.source}|${k.id}`)
+      )
+      .then((snapshot) => {
+        if (snapshot) setHistory(snapshot.history);
+      });
   };
 
   // Clear all history
   const handleClearAllHistory = () => {
     clearAllHistory();
     setHistory([]);
+    void libraryService.clear('history');
   };
 
   // Custom Source Actions
-  const handleSaveCustomSource = (source: CustomSourceSite) => {
+  const handleSaveCustomSource = (
+    source: CustomSourceSite,
+    options?: { silent?: boolean }
+  ) => {
     const isNew = !customSources.some((item) => item.id === source.id);
     const updated = saveCustomSource(source);
     setCustomSources(updated);
-    // 新增源后直接切过去，省得用户再翻一遍源列表
-    if (isNew && source.enabled) {
+    // 新增源后直接切过去，省得用户再翻一遍源列表（批量导入时不打扰）
+    if (isNew && source.enabled && !options?.silent) {
       setSelectedDrama(null);
       setActiveView('explore');
       setCurrentSource(source.id);
@@ -273,6 +333,14 @@ export const App: React.FC = () => {
   const handleDeleteCustomSource = (id: string) => {
     const updated = deleteCustomSource(id);
     setCustomSources(updated);
+  };
+
+  /** 恢复默认源：清空全部自定义源，只保留内置源（并回到默认站源）。 */
+  const handleResetCustomSources = () => {
+    const updated = clearCustomSources();
+    setCustomSources(updated);
+    setSelectedDrama(null);
+    setCurrentSource(BUILTIN_SOURCES[0].id);
   };
 
   // Visibility Actions
@@ -358,6 +426,7 @@ export const App: React.FC = () => {
               (h) => h.id === selectedDrama.id && h.source === selectedDrama.source
             )}
             onUpdateHistory={handleUpdateHistory}
+            onDramaResolved={handleDramaResolved}
             settings={settings}
             onUpdateSettings={handleUpdateSettings}
             onSwitchPeer={(peer) => {
@@ -375,7 +444,8 @@ export const App: React.FC = () => {
           /* Favorites / Follow View */
           <FollowView
             favorites={favorites}
-            onSelectDrama={(d) => handleSelectDrama(d)}
+            history={history}
+            onSelectDrama={(d, idx, pos) => handleSelectDrama(d, idx, pos)}
             onDeleteItems={handleDeleteFavorites}
             onUpdateStatus={handleUpdateFavoriteStatus}
           />
@@ -512,6 +582,7 @@ export const App: React.FC = () => {
         customSources={customSources}
         onSaveSource={handleSaveCustomSource}
         onDeleteSource={handleDeleteCustomSource}
+        onResetSources={handleResetCustomSources}
       />
 
       {/* Source Visibility Modal */}

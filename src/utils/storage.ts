@@ -10,6 +10,7 @@ const STORAGE_KEYS = {
   LAST_SOURCE: 'duanju_last_source_v1',
   LIVE_SOURCES: 'duanju_live_sources_v1',
   LAST_LIVE_SOURCE: 'duanju_last_live_source_v1',
+  LIVE_GREEN_MODE: 'duanju_live_green_mode_v1',
 };
 
 const DEFAULT_SETTINGS: UserSettings = {
@@ -62,6 +63,11 @@ export function loadHistory(): HistoryItem[] {
   return getStoredJson<HistoryItem[]>(STORAGE_KEYS.HISTORY, []);
 }
 
+/** 整表覆盖（服务端共享库同步下来的快照写回本地镜像）。 */
+export function saveHistoryRaw(items: HistoryItem[]): void {
+  setStoredJson(STORAGE_KEYS.HISTORY, items);
+}
+
 export function saveHistoryItem(item: HistoryItem): HistoryItem[] {
   const list = loadHistory();
   // Filter out existing entry for this drama ID and source
@@ -86,6 +92,11 @@ export function clearAllHistory(): void {
 // Favorites / Watchlist
 export function loadFavorites(): FavoriteItem[] {
   return getStoredJson<FavoriteItem[]>(STORAGE_KEYS.FAVORITES, []);
+}
+
+/** 整表覆盖（服务端共享库同步下来的快照写回本地镜像）。 */
+export function saveFavoritesRaw(items: FavoriteItem[]): void {
+  setStoredJson(STORAGE_KEYS.FAVORITES, items);
 }
 
 export function toggleFavorite(item: FavoriteItem): { favorites: FavoriteItem[]; isFav: boolean } {
@@ -144,6 +155,18 @@ export function deleteCustomSource(id: string): CustomSourceSite[] {
   return updated;
 }
 
+/** 恢复默认源：清空全部自定义源，只保留内置源。 */
+export function clearCustomSources(): CustomSourceSite[] {
+  setStoredJson(STORAGE_KEYS.CUSTOM_SOURCES, []);
+  return [];
+}
+
+/** 批量覆盖写入（导入 / 恢复备份时用）。 */
+export function replaceCustomSources(list: CustomSourceSite[]): CustomSourceSite[] {
+  setStoredJson(STORAGE_KEYS.CUSTOM_SOURCES, list);
+  return list;
+}
+
 // Source Visibility
 export function loadSourceVisibility(): Record<string, boolean> {
   return getStoredJson<Record<string, boolean>>(STORAGE_KEYS.SOURCES_VISIBILITY, {});
@@ -174,9 +197,9 @@ export function clearRecentSearches(): void {
 // Last Active Source
 export function loadLastActiveSource(): string {
   try {
-    return localStorage.getItem(STORAGE_KEYS.LAST_SOURCE) || 'hongguo';
+    return localStorage.getItem(STORAGE_KEYS.LAST_SOURCE) || 'a123';
   } catch {
-    return 'hongguo';
+    return 'a123';
   }
 }
 
@@ -215,5 +238,21 @@ export function loadLastLiveSource(): string {
 export function saveLastLiveSource(id: string): void {
   try {
     localStorage.setItem(STORAGE_KEYS.LAST_LIVE_SOURCE, id);
+  } catch {}
+}
+
+/** 直播绿色模式：只保留公开电视类分类（默认开启，与 App 端可切换行为一致）。 */
+export function loadLiveGreenMode(): boolean {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.LIVE_GREEN_MODE);
+    return raw === null ? true : raw === '1';
+  } catch {
+    return true;
+  }
+}
+
+export function saveLiveGreenMode(enabled: boolean): void {
+  try {
+    localStorage.setItem(STORAGE_KEYS.LIVE_GREEN_MODE, enabled ? '1' : '0');
   } catch {}
 }

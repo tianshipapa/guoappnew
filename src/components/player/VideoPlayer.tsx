@@ -17,7 +17,6 @@ import {
 } from 'lucide-react';
 import { Episode, Drama, UserSettings } from '../../types';
 import { apiService, ResolvedSource } from '../../services/api';
-import { DanmakuOverlay } from './DanmakuOverlay';
 
 interface VideoPlayerProps {
   drama: Drama;
@@ -285,6 +284,21 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [currentTime, duration, episodeIndex, totalEpisodes, isPlaying]);
 
+  // 全屏状态跟随浏览器（用户按 Esc / 双击退出时同步图标）
+  useEffect(() => {
+    const onChange = () => {
+      const element =
+        document.fullscreenElement || (document as any).webkitFullscreenElement || null;
+      setIsFullscreen(Boolean(element));
+    };
+    document.addEventListener('fullscreenchange', onChange);
+    document.addEventListener('webkitfullscreenchange', onChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', onChange);
+      document.removeEventListener('webkitfullscreenchange', onChange);
+    };
+  }, []);
+
   const togglePlay = () => {
     const video = videoRef.current;
     if (!video) return;
@@ -330,16 +344,53 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     resetHideTimer();
   };
 
-  const toggleFullscreen = () => {
+  const toggleFullscreen = useCallback(async () => {
     const container = containerRef.current;
+    const video = videoRef.current as
+      | (HTMLVideoElement & { webkitEnterFullscreen?: () => void })
+      | null;
     if (!container) return;
 
-    if (!document.fullscreenElement) {
-      container.requestFullscreen?.().then(() => setIsFullscreen(true)).catch(() => {});
-    } else {
-      document.exitFullscreen?.().then(() => setIsFullscreen(false)).catch(() => {});
+    // 已在全屏 → 退出
+    if (document.fullscreenElement || (document as any).webkitFullscreenElement) {
+      try {
+        const exit =
+          (document as any).exitFullscreen?.bind(document) ||
+          (document as any).webkitExitFullscreen?.bind(document);
+        if (exit) await exit();
+      } catch {
+        /* 用户已手动退出 */
+      }
+      setIsFullscreen(false);
+      return;
     }
-  };
+
+    // 标准 API + 各浏览器前缀
+    const request =
+      container.requestFullscreen?.bind(container) ||
+      (container as any).webkitRequestFullscreen?.bind(container) ||
+      (container as any).msRequestFullscreen?.bind(container);
+    if (request) {
+      try {
+        await request({ navigationUI: 'hide' });
+        setIsFullscreen(true);
+        resetHideTimer();
+        return;
+      } catch {
+        /* 落到 video 兜底 */
+      }
+    }
+
+    // iOS Safari：div 无法全屏，只能让 <video> 自己进全屏
+    if (video?.webkitEnterFullscreen) {
+      video.webkitEnterFullscreen();
+      setIsFullscreen(true);
+      return;
+    }
+
+    setNoticeMessage('当前浏览器不支持网页全屏，可按 F11 使用系统全屏');
+    setTimeout(() => setNoticeMessage(''), 3000);
+  }, []);
 
   const formatTime = (seconds: number) => {
     const total = Math.max(0, Math.floor(seconds || 0));
@@ -362,7 +413,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       ref={containerRef}
       onMouseMove={resetHideTimer}
       onClick={resetHideTimer}
-      className="relative w-full aspect-[9/16] sm:aspect-[16/9] max-h-[80vh] bg-black rounded-2xl overflow-hidden shadow-2xl border border-slate-800/80 group select-none flex items-center justify-center"
+      className="player-shell relative w-full aspect-[9/16] sm:aspect-[16/9] max-h-[80vh] bg-black rounded-2xl overflow-hidden shadow-2xl border border-slate-800/80 group select-none flex items-center justify-center"
     >
       <video
         ref={videoRef}
@@ -370,15 +421,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         style={videoFilterStyle}
         className="w-full h-full object-contain cursor-pointer"
         onClick={togglePlay}
-      />
-
-      <DanmakuOverlay
-        currentTime={currentTime}
-        enabled={settings.danmakuEnabled}
-        onToggleEnabled={() =>
-          onUpdateSettings({ ...settings, danmakuEnabled: !settings.danmakuEnabled })
-        }
-        dramaTitle={drama.title}
       />
 
       {isLoading && (

@@ -12,6 +12,7 @@ import {
   Check,
 } from 'lucide-react';
 import { SourceSite, UserSettings } from '../../types';
+import { CoreStatusPill } from './CoreStatusPill';
 
 interface NavbarProps {
   sources: SourceSite[];
@@ -101,6 +102,8 @@ export const Navbar: React.FC<NavbarProps> = ({
               <SlidersHorizontal className="w-3 h-3" />
             </div>
           </div>
+
+          <CoreStatusPill onClick={onOpenCustomSources} />
         </div>
 
         {/* Search Bar */}
@@ -184,10 +187,10 @@ export const Navbar: React.FC<NavbarProps> = ({
                 ? 'bg-rose-600 text-white font-medium'
                 : 'text-slate-300 hover:text-white hover:bg-slate-800'
             }`}
-            title="我的追剧与收藏"
+            title="我的收藏夹（支持续播）"
           >
             <Bookmark className="w-3.5 h-3.5 text-emerald-400" />
-            <span>追剧</span>
+            <span>收藏夹</span>
           </button>
 
           <button

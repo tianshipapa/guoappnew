@@ -27,6 +27,8 @@ interface DramaDetailViewProps {
   settings: UserSettings;
   onUpdateSettings: (settings: UserSettings) => void;
   onSwitchPeer: (peerDrama: Drama) => void;
+  /** 详情加载完成后回填真实集数 / 封面等字段，供收藏夹与播放记录使用 */
+  onDramaResolved?: (drama: Drama) => void;
   initialResumeIndex?: number;
   initialResumePosition?: number;
 }
@@ -41,6 +43,7 @@ export const DramaDetailView: React.FC<DramaDetailViewProps> = ({
   settings,
   onUpdateSettings,
   onSwitchPeer,
+  onDramaResolved,
   initialResumeIndex,
   initialResumePosition,
 }) => {
@@ -56,11 +59,27 @@ export const DramaDetailView: React.FC<DramaDetailViewProps> = ({
   useEffect(() => {
     let isMounted = true;
     apiService.fetchDramaDetail(drama.id, drama.source).then((res) => {
-      if (isMounted) setDetail(res);
+      if (!isMounted) return;
+      setDetail(res);
+      // 列表卡片本身不带集数，详情回来后把真实集数/封面回填给上层，
+      // 否则收藏夹会显示「0集」，续播时也只能按兜底集数推算。
+      const total = res.episodes?.length || 0;
+      const merged: Drama = {
+        ...drama,
+        ...(res.drama || {}),
+        id: drama.id,
+        source: drama.source,
+        episodes: total || res.drama?.episodes || drama.episodes,
+        cover: res.drama?.cover || drama.cover,
+        title: res.drama?.title || drama.title,
+      };
+      onDramaResolved?.(merged);
     });
     return () => {
       isMounted = false;
     };
+    // onDramaResolved 每次渲染都是新函数，故意不放进依赖数组，只在换剧时重取详情
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [drama.id, drama.source]);
 
   const episodes = detail?.episodes || [];
@@ -103,7 +122,7 @@ export const DramaDetailView: React.FC<DramaDetailViewProps> = ({
             }`}
           >
             <Bookmark className={`w-3.5 h-3.5 ${isFavorited ? 'fill-white' : ''}`} />
-            <span>{isFavorited ? '已追剧' : '追剧 / 想看'}</span>
+            <span>{isFavorited ? '已收藏' : '收藏'}</span>
           </button>
 
           {/* Share */}

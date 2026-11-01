@@ -76,7 +76,8 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
       title: item.title,
       description: '',
       cover: item.cover,
-      episodes: Number(item.episodes) || 80,
+      // 与收藏夹一致：不造假集数，真实集数由详情页回填
+      episodes: Number(item.episodes) || 0,
       category: 'urban',
       tags: ['观看记录'],
       releaseStatus: 'finished',

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Hls from 'hls.js';
+import mpegts from 'mpegts.js';
 import {
   Tv,
   Play,
@@ -15,6 +16,7 @@ import {
   Loader2,
   AlertCircle,
   X,
+  ShieldCheck,
 } from 'lucide-react';
 import { LiveChannel, LivePlatform, LiveSourceSite } from '../../types';
 import { liveService } from '../../services/live';
@@ -22,9 +24,11 @@ import type { LivePlayback } from '../../services/live';
 import {
   deleteLiveSource,
   loadLastLiveSource,
+  loadLiveGreenMode,
   loadLiveSources,
   loadUserSettings,
   saveLastLiveSource,
+  saveLiveGreenMode,
   saveLiveSource,
 } from '../../utils/storage';
 
@@ -42,9 +46,12 @@ export const LiveView: React.FC = () => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [showManager, setShowManager] = useState(false);
+  const [greenMode, setGreenMode] = useState<boolean>(() => loadLiveGreenMode());
+  const [blockedByGreen, setBlockedByGreen] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
+  const flvRef = useRef<mpegts.Player | null>(null);
 
   // ---- 直播源列表 ----
   const refreshSources = useCallback(async () => {
@@ -83,11 +90,23 @@ export const LiveView: React.FC = () => {
     setError('');
 
     liveService
-      .platforms(activeSourceId)
+      .platforms(activeSourceId, greenMode)
       .then((list) => {
         if (cancelled) return;
         setPlatforms(list);
         setActivePlatformId(list[0]?.id || 'all');
+        if (!list.length) {
+          const current = sources.find((item) => item.id === activeSourceId);
+          // 秀场面板在绿色模式下会被整源过滤掉，给个一键关闭的入口
+          setBlockedByGreen(Boolean(current?.adult && greenMode));
+          setError(
+            current?.adult && greenMode
+              ? '该直播源为秀场面板，绿色模式下暂无公开电视分类'
+              : '该直播源暂无可用分类'
+          );
+        } else {
+          setBlockedByGreen(false);
+        }
       })
       .catch((e: any) => {
         if (cancelled) return;
@@ -98,7 +117,7 @@ export const LiveView: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [activeSourceId]);
+  }, [activeSourceId, greenMode, sources]);
 
   // ---- 频道 ----
   useEffect(() => {
@@ -170,8 +189,23 @@ export const LiveView: React.FC = () => {
       hlsRef.current.destroy();
       hlsRef.current = null;
     }
+    if (flvRef.current) {
+      flvRef.current.destroy();
+      flvRef.current = null;
+    }
 
     const isHls = url.includes('.m3u8') || url.includes('/api/hls');
+    // 秀果这类面板源全是 FLV 直播流，浏览器 <video> 不认，必须走 mpegts.js。
+    // 注意：播放地址经过 /api/media?u=<urlencode> 代理，.flv 后面的 ? 会变成 %3F，
+    // 所以要先解码再判断。
+    let probe = url;
+    try {
+      probe = decodeURIComponent(url);
+    } catch {
+      /* 保持原串 */
+    }
+    const isFlv = !isHls && /\.flv/i.test(probe);
+
     if (isHls && Hls.isSupported()) {
       const hls = new Hls({ enableWorker: true, lowLatencyMode: true });
       hlsRef.current = hls;
@@ -187,6 +221,21 @@ export const LiveView: React.FC = () => {
           setIsLoading(false);
         }
       });
+    } else if (isFlv && mpegts.getFeatureList().mseLivePlayback) {
+      const player = mpegts.createPlayer(
+        { type: 'flv', isLive: true, hasAudio: true, hasVideo: true, url },
+        { enableStashBuffer: false, liveBufferLatencyChasing: true, lazyLoad: false }
+      );
+      flvRef.current = player;
+      player.attachMediaElement(video);
+      player.on(mpegts.Events.ERROR, () => {
+        setError('直播信号中断，可尝试切换其他频道');
+        setIsLoading(false);
+      });
+      player.load();
+      // mpegts 的 play() 声明为 void | Promise<void>，统一包一层吃掉自动播放拒绝
+      void Promise.resolve(player.play()).catch(() => {});
+      setIsLoading(false);
     } else {
       video.src = url;
       video.load();
@@ -198,6 +247,10 @@ export const LiveView: React.FC = () => {
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
+      }
+      if (flvRef.current) {
+        flvRef.current.destroy();
+        flvRef.current = null;
       }
     };
   }, [playback?.playUrl]);
@@ -435,7 +488,26 @@ export const LiveView: React.FC = () => {
               );
             })}
 
-            {!isLoading && !channels.length && (
+            {blockedByGreen && !channels.length && (
+              <div className="py-10 px-4 text-center flex flex-col items-center gap-2">
+                <ShieldCheck className="w-7 h-7 text-emerald-400/70" />
+                <p className="text-xs font-semibold text-slate-300">绿色模式已隐藏该面板的分类</p>
+                <p className="text-[11px] text-slate-500 leading-relaxed">
+                  秀果属主播 / 秀场类直播源，绿色模式只放行卫视、央视等公开电视分类
+                </p>
+                <button
+                  onClick={() => {
+                    setGreenMode(false);
+                    saveLiveGreenMode(false);
+                  }}
+                  className="mt-1 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-medium border border-slate-700"
+                >
+                  关闭绿色模式，显示全部内容
+                </button>
+              </div>
+            )}
+
+            {!isLoading && !channels.length && !blockedByGreen && (
               <div className="py-10 text-center text-xs text-slate-500">该分类暂无频道</div>
             )}
           </div>
@@ -445,6 +517,11 @@ export const LiveView: React.FC = () => {
       {showManager && (
         <LiveSourceManager
           sources={sources}
+          greenMode={greenMode}
+          onToggleGreenMode={(next) => {
+            setGreenMode(next);
+            saveLiveGreenMode(next);
+          }}
           onClose={() => setShowManager(false)}
           onChanged={async () => {
             await refreshSources();
@@ -458,9 +535,11 @@ export const LiveView: React.FC = () => {
 /** 直播源管理：内置源只读，自定义源可增删（存 localStorage，随请求带给服务端）。 */
 const LiveSourceManager: React.FC<{
   sources: LiveSourceSite[];
+  greenMode: boolean;
+  onToggleGreenMode: (next: boolean) => void;
   onClose: () => void;
   onChanged: () => Promise<void> | void;
-}> = ({ sources, onClose, onChanged }) => {
+}> = ({ sources, greenMode, onToggleGreenMode, onClose, onChanged }) => {
   const [name, setName] = useState('');
   const [urls, setUrls] = useState('');
   const [protocol, setProtocol] = useState<'list' | 'pingtai'>('list');
@@ -573,6 +652,31 @@ const LiveSourceManager: React.FC<{
             </div>
           </div>
 
+          <div className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg bg-slate-800/60 border border-slate-800">
+            <div className="flex items-center gap-2 min-w-0">
+              <ShieldCheck className={`w-4 h-4 shrink-0 ${greenMode ? 'text-emerald-400' : 'text-slate-500'}`} />
+              <div className="min-w-0">
+                <div className="text-xs font-semibold text-slate-200">绿色模式</div>
+                <div className="text-[11px] text-slate-500 truncate">
+                  只显示卫视 / 央视等公开电视分类，隐藏秀场类面板分类
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={() => onToggleGreenMode(!greenMode)}
+              className={`shrink-0 w-10 h-5 rounded-full transition-colors relative ${
+                greenMode ? 'bg-emerald-500' : 'bg-slate-600'
+              }`}
+              title={greenMode ? '已开启' : '已关闭'}
+            >
+              <span
+                className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${
+                  greenMode ? 'left-[22px]' : 'left-0.5'
+                }`}
+              />
+            </button>
+          </div>
+
           <div>
             <div className="text-[11px] font-bold text-slate-400 mb-2">内置源</div>
             <div className="space-y-1.5">
@@ -588,7 +692,7 @@ const LiveSourceManager: React.FC<{
                     </div>
                   </div>
                   <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-400">
-                    内置
+                    {item.adult ? '秀场' : '内置'}
                   </span>
                 </div>
               ))}

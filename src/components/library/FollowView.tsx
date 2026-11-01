@@ -1,18 +1,21 @@
 import React, { useState, useMemo } from 'react';
-import { Bookmark, Search, Trash2, CheckSquare, Square, Play, Tag } from 'lucide-react';
-import { FavoriteItem, Drama, FollowStatus } from '../../types';
+import { Bookmark, Search, Trash2, CheckSquare, Square, Play, RotateCcw } from 'lucide-react';
+import { FavoriteItem, HistoryItem, Drama, FollowStatus } from '../../types';
 import { matchesPinyin } from '../../utils/pinyin';
 import { SAMPLE_DRAMAS } from '../../data/sampleDramas';
 
 interface FollowViewProps {
   favorites: FavoriteItem[];
-  onSelectDrama: (drama: Drama) => void;
+  /** 播放记录：用来给收藏项算「看到第几集 / 进度」并支持续播。 */
+  history?: HistoryItem[];
+  onSelectDrama: (drama: Drama, resumeIndex?: number, resumePos?: number) => void;
   onDeleteItems: (keys: { id: string; source: string }[]) => void;
   onUpdateStatus: (id: string, source: string, status: FollowStatus) => void;
 }
 
 export const FollowView: React.FC<FollowViewProps> = ({
   favorites,
+  history = [],
   onSelectDrama,
   onDeleteItems,
   onUpdateStatus,
@@ -59,7 +62,14 @@ export const FollowView: React.FC<FollowViewProps> = ({
     setIsEditing(false);
   };
 
-  const handleCardClick = (item: FavoriteItem) => {
+  // 播放记录按 source|id 建索引，用于「看到第几集」与续播
+  const historyMap = useMemo(() => {
+    const map = new Map<string, HistoryItem>();
+    history.forEach((item) => map.set(`${item.source}|${item.id}`, item));
+    return map;
+  }, [history]);
+
+  const buildDrama = (item: FavoriteItem): Drama => {
     const found = SAMPLE_DRAMAS.find((d) => d.id === item.id) || {
       id: item.id,
       source: item.source,
@@ -67,12 +77,20 @@ export const FollowView: React.FC<FollowViewProps> = ({
       title: item.title,
       description: '',
       cover: item.cover,
-      episodes: Number(item.episodes) || 80,
+      // 不再兜底 80 集：假集数会被写回播放记录，真实的集数由详情页回填
+      episodes: Number(item.episodes) || 0,
       category: item.category || 'urban',
       tags: item.tags || ['我的追剧'],
       releaseStatus: 'ongoing',
     };
-    onSelectDrama(found);
+    // 收藏 / 记录里存的是完整 id（如 a123:slug），列表页可能带不到 sourceId
+    return { ...found, sourceId: found.sourceId || item.id.replace(/^[^:]+:/, '') } as Drama;
+  };
+
+  /** 点卡片：有播放记录就续播，没有就从第一集开始。 */
+  const handleCardClick = (item: FavoriteItem) => {
+    const record = historyMap.get(`${item.source}|${item.id}`);
+    onSelectDrama(buildDrama(item), record?.index, record?.position);
   };
 
   const statusLabels: Record<FollowStatus, { label: string; color: string }> = {
@@ -87,7 +105,7 @@ export const FollowView: React.FC<FollowViewProps> = ({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800">
         <div className="flex items-center gap-2">
           <Bookmark className="w-5 h-5 text-rose-500 fill-rose-500" />
-          <h2 className="text-base sm:text-lg font-bold text-slate-100">我的追剧</h2>
+          <h2 className="text-base sm:text-lg font-bold text-slate-100">我的收藏夹</h2>
           <span className="text-xs text-slate-500">（共 {favorites.length} 部）</span>
         </div>
 
@@ -168,9 +186,9 @@ export const FollowView: React.FC<FollowViewProps> = ({
       {filteredList.length === 0 ? (
         <div className="py-20 text-center text-slate-400">
           <Bookmark className="w-12 h-12 text-slate-600 mx-auto mb-3" />
-          <p className="text-sm font-semibold text-slate-300">暂无追剧剧目</p>
+          <p className="text-sm font-semibold text-slate-300">收藏夹还是空的</p>
           <p className="text-xs text-slate-500 mt-1">
-            浏览短剧时点击「追剧」即可加入此处，更新随心看
+            浏览时点「收藏」即可加入，看过之后直接从这里续播
           </p>
         </div>
       ) : (
@@ -231,10 +249,39 @@ export const FollowView: React.FC<FollowViewProps> = ({
                     </div>
                   )}
 
-                  {/* Bottom Episodes */}
-                  <div className="absolute bottom-2 left-2 text-[11px] text-slate-300 font-medium drop-shadow">
-                    {item.episodes ? `${item.episodes}集` : ''}
+                  {/* Bottom Episodes / 续播进度 */}
+                  <div className="absolute bottom-2 left-2 right-2 flex items-end justify-between gap-2">
+                    <span className="text-[11px] text-slate-300 font-medium drop-shadow">
+                      {item.episodes ? `${item.episodes}集` : ''}
+                    </span>
+                    {(() => {
+                      const record = historyMap.get(`${item.source}|${item.id}`);
+                      if (!record) return null;
+                      return (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-black/70 text-amber-300 backdrop-blur shrink-0">
+                          看到第 {record.index + 1} 集
+                        </span>
+                      );
+                    })()}
                   </div>
+
+                  {/* 卡片底部进度条 */}
+                  {(() => {
+                    const record = historyMap.get(`${item.source}|${item.id}`);
+                    const percent =
+                      record && record.duration > 0
+                        ? Math.min(100, Math.round((record.position / record.duration) * 100))
+                        : 0;
+                    if (!record) return null;
+                    return (
+                      <div className="absolute bottom-0 left-0 right-0 h-1 bg-black/50">
+                        <div
+                          className="h-full bg-rose-500"
+                          style={{ width: `${Math.max(2, percent)}%` }}
+                        />
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* Info Container */}
@@ -242,6 +289,36 @@ export const FollowView: React.FC<FollowViewProps> = ({
                   <h3 className="text-xs sm:text-sm font-bold text-slate-100 group-hover:text-rose-400 transition-colors line-clamp-1">
                     {item.title}
                   </h3>
+
+                  {/* 续播 / 从头看 */}
+                  {!isEditing && (
+                    <div className="mt-1.5 flex items-center gap-1.5">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleCardClick(item);
+                        }}
+                        className="flex-1 px-2 py-1 rounded-md bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-bold flex items-center justify-center gap-1 transition-colors"
+                      >
+                        <Play className="w-2.5 h-2.5 fill-white" />
+                        <span>
+                          {historyMap.get(`${item.source}|${item.id}`) ? '继续播放' : '开始播放'}
+                        </span>
+                      </button>
+                      {historyMap.get(`${item.source}|${item.id}`) && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onSelectDrama(buildDrama(item), 0, 0);
+                          }}
+                          className="px-1.5 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium flex items-center gap-1 border border-slate-700"
+                          title="从第一集重新播放"
+                        >
+                          <RotateCcw className="w-2.5 h-2.5" />
+                        </button>
+                      )}
+                    </div>
+                  )}
 
                   {/* Status switcher dropdown or tag */}
                   <div className="mt-2 flex items-center justify-between gap-1 pt-1 border-t border-slate-800/60">
@@ -259,7 +336,21 @@ export const FollowView: React.FC<FollowViewProps> = ({
                       <option value="done">已看</option>
                     </select>
 
-                    <span className="text-[10px] text-slate-500">更新</span>
+                    <span className="text-[10px] text-slate-500">
+                      {historyMap.get(`${item.source}|${item.id}`)
+                        ? `${Math.min(
+                            100,
+                            Math.round(
+                              (historyMap.get(`${item.source}|${item.id}`)!.position /
+                                Math.max(
+                                  1,
+                                  historyMap.get(`${item.source}|${item.id}`)!.duration
+                                )) *
+                                100
+                            )
+                          )}%`
+                        : '未开始'}
+                    </span>
                   </div>
                 </div>
               </div>

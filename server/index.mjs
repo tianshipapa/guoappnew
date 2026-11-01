@@ -54,6 +54,22 @@ import {
   IKB_BASE,
 } from './lib/providers/ikanbot.mjs';
 import {
+  guipianCatalog,
+  guipianSearch,
+  guipianDetail,
+  guipianResolve,
+  guipianCategories,
+  GUIPIAN_BASE,
+} from './lib/providers/guipian.mjs';
+import {
+  hanxiaoquanCatalog,
+  hanxiaoquanSearch,
+  hanxiaoquanDetail,
+  hanxiaoquanResolve,
+  hanxiaoquanCategories,
+  HANXIAOQUAN_BASE,
+} from './lib/providers/hanxiaoquan.mjs';
+import {
   maccmsCatalog,
   maccmsSearch,
   maccmsDetail,
@@ -61,6 +77,7 @@ import {
   maccmsCategories,
 } from './lib/providers/maccms-api.mjs';
 import { adCleaned } from './lib/adfilter.mjs';
+import { readLibrary, applyLibrary } from './lib/library.mjs';
 import { rewriteManifest, decodeHeaders } from './lib/hls.mjs';
 import {
   livePlatforms,
@@ -75,7 +92,7 @@ const SEARCH_SOURCE_TIMEOUT = 25000;
 
 // ---------------------------------------------------------------- 站源调度
 
-const NATIVE_SOURCES = new Set(['a123', 'ikanbot']);
+const NATIVE_SOURCES = new Set(['a123', 'ikanbot', 'guipian', 'hanxiaoquan']);
 
 function ruleOfPayload(payload) {
   const raw = payload?.rule;
@@ -105,11 +122,19 @@ function baseOf(payload, rule, fallback) {
   return fallback;
 }
 
+/**
+ * 「规则型」站源：自定义源，以及内置的「网页」聚合源（XBPQ 远程订阅）。
+ * 两者都必须随请求带上 rule/base，服务端不做内置绑定。
+ */
+function isRuleSource(source) {
+  return source === 'wangye' || String(source || '').startsWith('custom:');
+}
+
 /** 站源是否有原生实现（否则前端走示例数据，避免整站空白）。 */
 function supportsNative(source) {
   if (!source) return false;
   if (NATIVE_SOURCES.has(source)) return true;
-  return source.startsWith('custom:');
+  return isRuleSource(source);
 }
 
 function isMaccmsKind(kind, base) {
@@ -129,7 +154,13 @@ async function dispatchCatalog(payload) {
   if (source === 'ikanbot') {
     return ikanbotCatalog({ base: baseOf(payload, null, IKB_BASE), category, page });
   }
-  if (source.startsWith('custom:')) {
+  if (source === 'guipian') {
+    return guipianCatalog({ base: baseOf(payload, null, GUIPIAN_BASE), category, page });
+  }
+  if (source === 'hanxiaoquan') {
+    return hanxiaoquanCatalog({ base: baseOf(payload, null, HANXIAOQUAN_BASE), category, page });
+  }
+  if (isRuleSource(source)) {
     const rule = ruleOfPayload(payload);
     const kind = payload?.kind;
     if (!rule) {
@@ -157,7 +188,13 @@ async function dispatchSearch(payload) {
   if (source === 'ikanbot') {
     return ikanbotSearch({ base: baseOf(payload, null, IKB_BASE), query, page });
   }
-  if (source.startsWith('custom:')) {
+  if (source === 'guipian') {
+    return guipianSearch({ base: baseOf(payload, null, GUIPIAN_BASE), query, page });
+  }
+  if (source === 'hanxiaoquan') {
+    return hanxiaoquanSearch({ base: baseOf(payload, null, HANXIAOQUAN_BASE), query, page });
+  }
+  if (isRuleSource(source)) {
     const rule = ruleOfPayload(payload);
     if (!rule) {
       if (isMaccmsKind(payload?.kind, payload?.base)) {
@@ -176,7 +213,9 @@ async function dispatchCategories(payload) {
   const source = String(payload?.source || '');
   if (source === 'a123') return a123Categories();
   if (source === 'ikanbot') return ikanbotCategories();
-  if (source.startsWith('custom:')) {
+  if (source === 'guipian') return guipianCategories();
+  if (source === 'hanxiaoquan') return hanxiaoquanCategories();
+  if (isRuleSource(source)) {
     const rule = ruleOfPayload(payload);
     if (rule) {
       const categories = rule.categories;
@@ -200,7 +239,13 @@ async function dispatchDetail(payload) {
   if (source === 'ikanbot') {
     return ikanbotDetail({ base: baseOf(payload, null, IKB_BASE), sourceId });
   }
-  if (source.startsWith('custom:')) {
+  if (source === 'guipian') {
+    return guipianDetail({ base: baseOf(payload, null, GUIPIAN_BASE), sourceId });
+  }
+  if (source === 'hanxiaoquan') {
+    return hanxiaoquanDetail({ base: baseOf(payload, null, HANXIAOQUAN_BASE), sourceId });
+  }
+  if (isRuleSource(source)) {
     const rule = ruleOfPayload(payload);
     if (!rule) {
       if (isMaccmsKind(payload?.kind, payload?.base)) {
@@ -230,7 +275,13 @@ async function dispatchResolve(payload) {
   if (source === 'ikanbot') {
     return ikanbotResolve({ base: baseOf(payload, null, IKB_BASE), chapter });
   }
-  if (source.startsWith('custom:')) {
+  if (source === 'guipian') {
+    return guipianResolve({ base: baseOf(payload, null, GUIPIAN_BASE), chapter });
+  }
+  if (source === 'hanxiaoquan') {
+    return hanxiaoquanResolve({ base: baseOf(payload, null, HANXIAOQUAN_BASE), chapter });
+  }
+  if (isRuleSource(source)) {
     const rule = ruleOfPayload(payload);
     if (!rule) return maccmsResolve({ chapter, name });
     const base = baseOf(payload, rule, '');
@@ -427,6 +478,30 @@ function sendJSON(res, status, payload) {
   res.end(body);
 }
 
+/**
+ * 全量 CORS。
+ *
+ * 前端可能部署在 Cloudflare Pages（https://xxx.pages.dev），而抓取服务跑在
+ * 用户本机（http://127.0.0.1:8788），属于跨源调用；同时 Chrome 会把
+ * 「公网页面 → 本地地址」判定为 Private Network Access，需要额外回一个
+ * Access-Control-Allow-Private-Network，否则预检就失败。
+ */
+function applyCORS(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    'Content-Type, Range, Accept, Accept-Language, X-Requested-With, Authorization'
+  );
+  res.setHeader(
+    'Access-Control-Expose-Headers',
+    'X-Final-URL, Content-Length, Content-Range, Accept-Ranges, ETag, Last-Modified'
+  );
+  res.setHeader('Access-Control-Allow-Private-Network', 'true');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  res.setHeader('Timing-Allow-Origin', '*');
+}
+
 function sendError(res, error) {
   const message = error?.message || String(error || '未知错误');
   sendJSON(res, 200, { ok: false, error: message });
@@ -461,12 +536,20 @@ async function handleRequest(req, res, url) {
   const path = url.pathname;
   const query = url.searchParams;
 
+  applyCORS(req, res);
+
+  // 预检：Cloudflare Pages 等静态托管上不存在后端，跨源调用全靠这里放行。
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    return res.end();
+  }
+
   if (path === '/api/health') {
     return sendJSON(res, 200, {
       ok: true,
       service: 'guoappnew-native-core',
       time: Date.now(),
-      providers: ['xbpq', 'a123', 'ikanbot', 'maccms-api', 'live'],
+      providers: ['xbpq', 'a123', 'ikanbot', 'guipian', 'hanxiaoquan', 'maccms-api', 'live', 'library'],
     });
   }
 
@@ -555,11 +638,43 @@ async function handleRequest(req, res, url) {
     return sendJSON(res, 200, { ok: true, sources: liveSourceCatalog(parsed) });
   }
 
-  if (req.method !== 'POST') {
+  if (path === '/api/library') {
+    // GET 读；POST 写。GET + ?payload=<base64url JSON> 也能写（某些托管拦 POST）。
+    let body = null;
+    if (req.method === 'POST') {
+      body = await readBody(req);
+    } else {
+      const token = query.get('payload');
+      if (token) {
+        try {
+          body = JSON.parse(Buffer.from(token, 'base64url').toString('utf-8'));
+        } catch {
+          body = null;
+        }
+      }
+    }
+    if (!body) return sendJSON(res, 200, { ok: true, data: await readLibrary() });
+    const data = await applyLibrary(body);
+    return sendJSON(res, 200, { ok: true, data });
+  }
+
+  // GET 回退：某些静态托管 / 反代会拦掉 POST（Cloudflare Pages 对静态资源
+  // 的非 GET 请求直接返回 405），此时前端改用 ?payload=<base64url JSON>。
+  let queryPayload = null;
+  const payloadToken = query.get('payload');
+  if (payloadToken) {
+    try {
+      queryPayload = JSON.parse(Buffer.from(payloadToken, 'base64url').toString('utf-8'));
+    } catch {
+      queryPayload = null;
+    }
+  }
+
+  if (req.method !== 'POST' && !queryPayload) {
     return sendJSON(res, 404, { ok: false, error: '未知接口' });
   }
 
-  const payload = await readBody(req);
+  const payload = req.method === 'POST' ? await readBody(req) : queryPayload || {};
 
   switch (path) {
     case '/api/catalog': {
@@ -621,6 +736,48 @@ async function handleRequest(req, res, url) {
       const drafts = parseImport(text);
       return sendJSON(res, 200, { ok: true, drafts, count: drafts.length });
     }
+    case '/api/source/subscribe': {
+      // 「拉订阅 + 解析」合成一次请求：前端只需要发一个短小的地址参数，
+      // 抓取、GitHub 链接转换、规则拆分都在本地服务里完成。
+      const raw = String(payload?.url || payload?.address || '').trim();
+      if (!raw) throw new Error('请填写订阅地址');
+      const candidates = subscribeCandidates(raw);
+      let text = '';
+      let finalURL = candidates[0];
+      let lastError = '';
+      for (const candidate of candidates) {
+        try {
+          const result = await fetchText(candidate, {
+            referer: payload?.referer || '',
+            timeout: 15000,
+          });
+          if (result.text && result.text.trim()) {
+            text = result.text;
+            finalURL = result.url;
+            break;
+          }
+          lastError = '返回内容为空';
+        } catch (error) {
+          lastError = error.message;
+        }
+      }
+      if (!text.trim()) {
+        throw new Error(`订阅地址不可达（${lastError || '网络超时'}）`);
+      }
+      const trimmed = text.trim();
+      // 拿到的是网页而不是配置（常见于 GitHub blob / 网盘页），提前说清楚
+      if (/^<!doctype html/i.test(trimmed) || /^<html/i.test(trimmed)) {
+        throw new Error('该地址返回的是网页而不是配置文本，请改用 raw 直链');
+      }
+      const drafts = parseImport(trimmed);
+      return sendJSON(res, 200, {
+        ok: true,
+        drafts,
+        count: drafts.length,
+        finalURL,
+        preview: trimmed.slice(0, 160),
+      });
+    }
     case '/api/search/start': {
       const query = String(payload?.query || '').trim();
       if (!query) throw new Error('请输入搜索内容');
@@ -664,7 +821,9 @@ async function handleRequest(req, res, url) {
       return sendJSON(res, 200, { ok: true });
     }
     case '/api/live/platforms': {
-      const platforms = await livePlatforms(payload?.sources || [], payload?.source);
+      const platforms = await livePlatforms(payload?.sources || [], payload?.source, {
+        greenMode: payload?.greenMode === true,
+      });
       return sendJSON(res, 200, { ok: true, platforms });
     }
     case '/api/live/channels': {
@@ -688,6 +847,46 @@ function siteAddress(candidate) {
   if (/^https?:\/\//i.test(value)) return value;
   if (/^[\w.-]+\.[a-z]{2,}(\/|$)/i.test(value)) return 'https://' + value;
   return '';
+}
+
+/**
+ * 归一订阅地址：
+ * - 补协议头（`raw.githubusercontent.com/...`）
+ * - GitHub 网页链接（blob/raw 页）转 raw 直链
+ * - 「加速链接+网址」拼接形态（https://加速域名/https://真实网址）原样保留
+ */
+function normalizeSubscribeURL(raw) {
+  let value = String(raw || '').trim();
+  if (!value) return '';
+  if (!/^https?:\/\//i.test(value)) {
+    if (/^[\w.-]+\.[a-z]{2,}(\/|$)/i.test(value)) value = 'https://' + value;
+    else return value;
+  }
+  const github = value.match(
+    /^https?:\/\/(?:www\.)?github\.com\/([^/]+)\/([^/]+)\/(?:blob|raw)\/([^?#]+)/i
+  );
+  if (github) {
+    const [, user, repo, path] = github;
+    return `https://raw.githubusercontent.com/${user}/${repo.replace(/\.git$/i, '')}/${path}`;
+  }
+  return value;
+}
+
+/**
+ * 订阅地址候选列表：直链不通时自动换公共镜像。
+ * GitHub raw 在国内网络经常超时，jsDelivr 通常可达且内容一致。
+ */
+function subscribeCandidates(raw) {
+  const primary = normalizeSubscribeURL(raw);
+  const list = [primary];
+  const github = primary.match(
+    /^https?:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/([^/]+)\/(.+)$/i
+  );
+  if (github) {
+    const [, user, repo, branch, path] = github;
+    list.push(`https://cdn.jsdelivr.net/gh/${user}/${repo}@${branch}/${path}`);
+  }
+  return list;
 }
 
 function ruleFromEntry(entry) {

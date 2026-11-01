@@ -28,21 +28,24 @@
   background: rgba(148, 163, 184, 0.6);
 }
 
-/* Danmaku animation */
-@keyframes danmaku-move {
-  from {
-    transform: translateX(100%);
-  }
-  to {
-    transform: translateX(-150%);
-  }
+/* 播放器全屏：容器必须真正铺满屏幕，
+   不能被竖屏比例 / max-h-[80vh] / 圆角边框这些常态样式限制住。 */
+.player-shell:fullscreen,
+.player-shell:-webkit-full-screen {
+  width: 100vw !important;
+  height: 100vh !important;
+  max-height: none !important;
+  aspect-ratio: auto !important;
+  border-radius: 0 !important;
+  border-width: 0 !important;
+  background: #000 !important;
 }
 
-.animate-danmaku {
-  animation-name: danmaku-move;
-  animation-timing-function: linear;
-  animation-fill-mode: forwards;
-  white-space: nowrap;
+.player-shell:fullscreen > video,
+.player-shell:-webkit-full-screen > video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 
 /* Line clamp helpers */

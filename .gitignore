@@ -44,3 +44,6 @@ desktop.ini
 /CLAUDE.md
 /legacy_ui/
 /legacy_test/
+
+# 本机抓取服务的共享收藏夹 / 播放记录（换机器不带走）
+/server/data/

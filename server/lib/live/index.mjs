@@ -12,6 +12,19 @@ import { parseLive, isPlayableLiveUrl, UNSORTED } from './parse.mjs';
 /** 内置直播源（公开 IPTV 列表，均可自行增删）。 */
 export const BUILTIN_LIVE_SOURCES = [
   {
+    // 秀果：移植 guoappxp 的 pingtai 面板源（主播直播房间）。
+    // 面板接口约定：{endpoint}/json.txt 返回分类，{endpoint}/{分类} 返回频道。
+    // adult 标记与 App 端一致，绿色模式下整源隐藏。
+    id: 'xiuguo',
+    name: '秀果',
+    description: '主播直播 · 实时开播',
+    protocol: 'pingtai',
+    endpoints: ['http://api.vipmisss.com:81/xcdsw', 'http://api.hclyz.com:81/mf'],
+    group: '秀果',
+    adult: true,
+    builtin: true,
+  },
+  {
     id: 'iptv-org-cn',
     name: '国内频道 (iptv-org)',
     description: 'CCTV / 卫视 / 地方台，全球公开 IPTV 索引',
@@ -81,16 +94,18 @@ async function fetchSourceText(address, headers = {}, referer = '') {
   return text;
 }
 
-/** 分类列表。 */
-export async function livePlatforms(sources, sourceId) {
+/** 分类列表。greenMode 为 true 时，成人面板源只放行公开电视类分类（与 App 端一致，默认关闭）。 */
+export async function livePlatforms(sources, sourceId, { greenMode = false } = {}) {
   const source = sourceOf(sources, sourceId);
   if (source.protocol === 'pingtai') {
-    return cached(`platforms:${source.id}`, () => pingtaiPlatforms(source));
+    return cached(`platforms:${source.id}:${greenMode ? 'green' : 'full'}`, () =>
+      pingtaiPlatforms(source, greenMode)
+    );
   }
   return [{ id: 'all', name: source.group || '全部频道', count: 0 }];
 }
 
-async function pingtaiPlatforms(source) {
+async function pingtaiPlatforms(source, greenMode = false) {
   const byId = new Map();
   const failures = [];
   for (const endpoint of source.endpoints || []) {
@@ -127,7 +142,7 @@ async function pingtaiPlatforms(source) {
     throw new Error(failures.length ? `该直播源暂时不可用：${failures[0]}` : '该直播源没有可用分类');
   }
   let all = [...byId.values()];
-  if (source.adult && source.greenMode !== false) {
+  if (greenMode && source.adult) {
     all = all.filter((item) => GREEN_CATEGORY.test(item.name));
   }
   const withContent = all.filter((item) => item.count > 0);
@@ -230,5 +245,6 @@ export function liveSourceCatalog(customSources = []) {
     protocol: source.protocol || 'list',
     builtin: Boolean(source.builtin),
     group: source.group || '',
+    adult: Boolean(source.adult),
   }));
 }

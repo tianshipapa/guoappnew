@@ -230,4 +230,96 @@ check('txt #genre# 分组', () => {
   assert.deepEqual(result.groups.map((group) => group.name), ['央视', '卫视']);
 });
 
+// ---------------------------------------------------------------- 收藏夹共享库
+// 异步用例单独跑，写到系统临时目录，不碰 server/data/library.json
+const checkAsync = async (name, fn) => {
+  try {
+    await fn();
+    passed++;
+    console.log(`  ✓ ${name}`);
+  } catch (error) {
+    console.error(`  ✗ ${name}\n    ${error.message}`);
+    process.exitCode = 1;
+  }
+};
+
+console.log('收藏夹共享库');
+{
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { rm } = await import('node:fs/promises');
+  const { setLibraryPath, applyLibrary, readLibrary, entryKey } = await import('../lib/library.mjs');
+
+  const libPath = join(tmpdir(), `guoappnew-library-${Date.now()}.json`);
+  setLibraryPath(libPath);
+  await rm(libPath, { force: true });
+
+  const drama = (id, source, extra = {}) => ({ id, source, title: `剧 ${id}`, ...extra });
+
+  await checkAsync('首次读取返回空库', async () => {
+    const data = await readLibrary();
+    assert.deepEqual(data, { favorites: [], history: [] });
+  });
+
+  await checkAsync('put 同剧去重并置顶，续播位置随之更新', async () => {
+    await applyLibrary({ list: 'history', op: 'put', item: drama('1', 'a123', { index: 0, position: 12 }) });
+    await applyLibrary({ list: 'history', op: 'put', item: drama('2', 'a123', { index: 3, position: 300 }) });
+    const data = await applyLibrary({
+      list: 'history',
+      op: 'put',
+      item: drama('1', 'a123', { index: 2, position: 888 }),
+    });
+    assert.equal(data.history.length, 2);
+    assert.equal(data.history[0].id, '1', '最近观看应置顶');
+    assert.equal(data.history[0].index, 2);
+    assert.equal(data.history[0].position, 888);
+  });
+
+  await checkAsync('复合键按 source|id 区分同 id 不同源', async () => {
+    assert.equal(entryKey({ source: 'a123', id: 'x' }), 'a123|x');
+    await applyLibrary({ list: 'favorites', op: 'put', item: drama('9', 'a123') });
+    const data = await applyLibrary({ list: 'favorites', op: 'put', item: drama('9', 'guipian') });
+    assert.equal(data.favorites.length, 2);
+  });
+
+  await checkAsync('toggle 两次等于加了再删', async () => {
+    const once = await applyLibrary({ list: 'favorites', op: 'toggle', item: drama('t1', 'ikanbot') });
+    assert.equal(once.favorites.filter((item) => item.id === 't1').length, 1);
+    const twice = await applyLibrary({ list: 'favorites', op: 'toggle', item: drama('t1', 'ikanbot') });
+    assert.equal(twice.favorites.filter((item) => item.id === 't1').length, 0);
+  });
+
+  await checkAsync('remove 按 keys 批量删除', async () => {
+    await applyLibrary({ list: 'favorites', op: 'put', item: drama('r1', 'a123') });
+    await applyLibrary({ list: 'favorites', op: 'put', item: drama('r2', 'a123') });
+    const data = await applyLibrary({ list: 'favorites', op: 'remove', keys: ['a123|r1', 'a123|r2'] });
+    assert.equal(data.favorites.filter((item) => item.id.startsWith('r')).length, 0);
+  });
+
+  await checkAsync('clear 清空指定列表，另一列表不受影响', async () => {
+    const data = await applyLibrary({ list: 'favorites', op: 'clear' });
+    assert.equal(data.favorites.length, 0);
+    assert.ok(data.history.length > 0, '历史不应被一起清掉');
+  });
+
+  await checkAsync('脏数据清洗：缺 id 报错、超长标题截断、状态兜底', async () => {
+    await assert.rejects(() => applyLibrary({ list: 'favorites', op: 'put', item: { source: 'a123' } }));
+    const data = await applyLibrary({
+      list: 'favorites',
+      op: 'put',
+      item: { id: 'long', source: 'a123', title: '剧'.repeat(400) },
+    });
+    const entry = data.favorites.find((item) => item.id === 'long');
+    assert.equal([...entry.title].length, 256);
+    assert.equal(entry.status, 'watching');
+  });
+
+  await checkAsync('写盘后可重新读回（模拟重启进程）', async () => {
+    setLibraryPath(libPath); // 清掉内存缓存，强制回读磁盘
+    const data = await readLibrary();
+    assert.ok(data.history.some((item) => item.id === '1'));
+    await rm(libPath, { force: true });
+  });
+}
+
 console.log(`\n通过 ${passed} 项${process.exitCode ? '（有失败）' : '，全部正常'}`);
