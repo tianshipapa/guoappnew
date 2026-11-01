@@ -9,6 +9,13 @@ import { jsonPathValue, decodeBase64Segment } from '../lib/xbpq/json.mjs';
 import { filterAdSegments } from '../lib/adfilter.mjs';
 import { rewriteManifest } from '../lib/hls.mjs';
 import { parseEpisodes } from '../lib/xbpq/provider.mjs';
+import {
+  tokenRefreshEndpoint,
+  tokenRefreshValue,
+  ruleHasTokenConfig,
+  ruleWithToken,
+  refreshXBPQToken,
+} from '../lib/xbpq/token.mjs';
 import { parseImport } from '../index.mjs';
 import { parseLive } from '../lib/live/parse.mjs';
 
@@ -470,6 +477,121 @@ console.log('边缘端口限制（仅 Cloudflare，不误伤 Vercel）');
     assert.equal(isLivePortRestricted(), false);
   });
 }
+
+// ---------------------------------------------------------------- XBPQ 令牌自动续期
+// 移植 guoappxp provider_xbpq_token.go：需要登录令牌的 XBPQ 源（如青空次元类站点），
+// 取流失败时用 refresh token 换一套新 access token、改写「头部集合」的 Authorization 后重试。
+console.log('XBPQ 令牌自动续期');
+
+check('刷新地址 / 刷新令牌识别（绝对地址与相对路径）', () => {
+  const withAbs = parseRule(
+    JSON.stringify({
+      分类url: 'https://x.test/list/{cateId}.html',
+      刷新地址: 'https://x.test/api/refresh',
+      刷新令牌: 'RT-OLD',
+    })
+  );
+  assert.equal(tokenRefreshEndpoint(withAbs, 'https://x.test'), 'https://x.test/api/refresh');
+  assert.equal(tokenRefreshValue(withAbs), 'RT-OLD');
+  assert.equal(ruleHasTokenConfig(withAbs), true);
+
+  const withRel = parseRule(
+    JSON.stringify({ 分类url: 'https://y.test/list/{cateId}.html', 刷新地址: '/api/auth/refresh', 刷新令牌: 'RT2' })
+  );
+  // 相对路径用主页/分类 url 的站点根拼出绝对地址
+  assert.equal(tokenRefreshEndpoint(withRel, 'https://y.test'), 'https://y.test/api/auth/refresh');
+
+  const none = parseRule(JSON.stringify({ 分类url: 'https://z.test/list/{cateId}.html' }));
+  assert.equal(ruleHasTokenConfig(none), false);
+});
+
+check('改写头部集合的 Authorization（其余头保留）', () => {
+  const rule = parseRule(
+    JSON.stringify({
+      分类url: 'https://x.test/list/{cateId}.html',
+      头部集合: 'Referer$https://x.test/#X-Api-Key$k9',
+      刷新令牌: 'RT-OLD',
+    })
+  );
+  ruleWithToken(rule, 'NEW-ACCESS', 'RT-NEW');
+  assert.equal(rule.field('刷新令牌'), 'RT-NEW');
+  const headers = rule.headerSet;
+  assert.equal(headers.Authorization, 'Bearer NEW-ACCESS');
+  assert.equal(headers.Referer, 'https://x.test/');
+  assert.equal(headers['X-Api-Key'], 'k9');
+});
+
+check('令牌刷新成功 → 替换 Authorization 并带新令牌重试取流', async () => {
+  // 用一个 MINIMAL 简写规则（只写 分类url + 刷新字段）验证端到端：模板补全 + 令牌续期同时生效。
+  const rule = parseRule(
+    JSON.stringify({
+      分类url: 'https://token.test/index.php/vod/show/id/{cateId}-{catePg}.html',
+      分类: '电影$1',
+      刷新地址: 'https://token.test/api/refresh',
+      刷新令牌: 'RT-OLD',
+      头部集合: 'Authorization$Bearer RT-OLD',
+    })
+  );
+  // 模板应已补全 播放数组 / 跳转播放链接 等字段
+  assert.ok(rule.field('播放数组'), '简写规则应被模板补全 播放数组');
+
+  // 第一次取流失败（401），第二次刷新后带新令牌成功
+  let calls = 0;
+  const fakeFetcher = async (address, options) => {
+    if (address === 'https://token.test/api/refresh') {
+      return {
+        text: JSON.stringify({ data: { token: 'ACCESS-NEW', refreshToken: 'RT-NEW' } }),
+      };
+    }
+    calls++;
+    if (calls === 1) throw new Error('401 未授权');
+    return { text: 'var player_url="https://token.test/index.m3u8"' };
+  };
+
+  const refreshed = await refreshXBPQToken(rule, 'https://token.test', 'custom:token', fakeFetcher);
+  assert.ok(refreshed, '应返回换好令牌的规则');
+  assert.equal(refreshed.headerSet.Authorization, 'Bearer ACCESS-NEW');
+  assert.equal(refreshed.field('刷新令牌'), 'RT-NEW');
+});
+
+check('令牌刷新失败 / 未配置 → 返回 null（不阻断原错误）', async () => {
+  const noToken = parseRule(JSON.stringify({ 分类url: 'https://a.test/list/{cateId}.html' }));
+  assert.equal(await refreshXBPQToken(noToken, 'https://a.test', 'c1'), null);
+
+  const broken = parseRule(
+    JSON.stringify({
+      分类url: 'https://b.test/list/{cateId}.html',
+      刷新地址: 'https://b.test/api/refresh',
+      刷新令牌: 'RT',
+    })
+  );
+  const failFetcher = async () => {
+    throw new Error('network down');
+  };
+  assert.equal(await refreshXBPQToken(broken, 'https://b.test', 'c2', failFetcher), null);
+});
+
+check('同 endpoint 刷新结果在窗口内复用（避免并发刷新互相顶掉）', async () => {
+  const rule = parseRule(
+    JSON.stringify({
+      分类url: 'https://c.test/list/{cateId}.html',
+      刷新地址: 'https://c.test/api/refresh',
+      刷新令牌: 'RT',
+    })
+  );
+  let refreshCalls = 0;
+  const fetcher = async (address) => {
+    if (address === 'https://c.test/api/refresh') {
+      refreshCalls++;
+      return { text: JSON.stringify({ data: { token: 'A' + refreshCalls, refreshToken: 'R' } }) };
+    }
+    return { text: '' };
+  };
+  const a = await refreshXBPQToken(rule, 'https://c.test', 'c3', fetcher);
+  const b = await refreshXBPQToken(rule, 'https://c.test', 'c3', fetcher);
+  assert.equal(refreshCalls, 1, '窗口内不应重复打刷新接口');
+  assert.equal(a.headerSet.Authorization, b.headerSet.Authorization);
+});
 
 // ---------------------------------------------------------------- Vercel 兼容层
 // Vercel 的 Node.js 运行时原生就是 Node 的 req/res（http.IncomingMessage /

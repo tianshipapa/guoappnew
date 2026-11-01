@@ -19,6 +19,7 @@ import { cleanEmptySegments } from './template.mjs';
 import { cutOnce, list, parseSteps, applyStepScan, unescapeText } from './cut.mjs';
 import { selectorNodes, parseSelector, selectorWithin, selectorFirstString } from './selector.mjs';
 import { jsonArrayItems, jsonPathRaw, jsonStringValue, isValidJSON, isJSONPattern, anyToString } from './json.mjs';
+import { refreshXBPQToken, ruleHasTokenConfig } from './token.mjs';
 
 /** `url;post;body` / `url;get` 形态拆解。 */
 export function splitSpec(raw) {
@@ -670,7 +671,7 @@ async function resolveRoutes(routes, rule, name) {
 }
 
 /** 取直链：主线路失败时依次尝试其它线路。 */
-export async function xbpqResolve({ rule, base, chapter, name = '线路' }) {
+export async function xbpqResolve({ rule, base, chapter, name = '线路', source = '' }) {
   const pageURL = String(chapter.pageUrl || '').trim();
   const address = String(chapter.videoUrl || '').trim();
   const referer = chapter.referer || rule.playReferer || base + '/';
@@ -685,22 +686,43 @@ export async function xbpqResolve({ rule, base, chapter, name = '线路' }) {
 
   let primary = null;
   let lastError = null;
+  let usedRule = rule;
   try {
     primary = await resolveOne(target, referer, rule);
   } catch (error) {
     lastError = error;
   }
+
+  // 令牌自动续期：取流失败且规则配了刷新令牌时，换一套新令牌后重试一次
+  // （对齐 guoappxp 的 xbpqRefreshAccessToken：refresh token 轮换，旧值立即作废）。
+  if (!primary && ruleHasTokenConfig(rule)) {
+    try {
+      const refreshed = await refreshXBPQToken(rule, base, source);
+      if (refreshed) {
+        usedRule = refreshed;
+        try {
+          primary = await resolveOne(target, referer, refreshed);
+          lastError = null;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+    } catch {
+      /* 续期异常忽略，沿用上次错误 */
+    }
+  }
+
   if (primary) {
-    const variants = await resolveRoutes(chapter.routes, rule, name);
-    return { ...primary, url: primary.url, variants };
+    const variants = await resolveRoutes(chapter.routes, usedRule, name);
+    return { ...primary, url: primary.url, variants, tokenRefreshed: usedRule !== rule };
   }
   for (const route of chapter.routes || []) {
     if (!route || route === target) continue;
     try {
-      const alt = await resolveOne(route, referer, rule);
+      const alt = await resolveOne(route, referer, usedRule);
       const rest = (chapter.routes || []).filter((item) => item !== route);
-      const variants = await resolveRoutes(rest, rule, name);
-      return { ...alt, variants };
+      const variants = await resolveRoutes(rest, usedRule, name);
+      return { ...alt, variants, tokenRefreshed: usedRule !== rule };
     } catch {
       /* 试下一条 */
     }

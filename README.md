@@ -17,6 +17,7 @@
    - JSON 路径：`j:data.list[0].name`，支持切片 `[0,]` / `[a-b]` / 负数下标、键名大小写不敏感。
    - **模板家族自动补全**：MacCMS 新版 mxone / MacCMS 接口(JSON) / MacCMS / 路径式泛型 / 通用高频，五族按「专用→通用」合并且不覆盖已写字段——用户只写 `分类url + 分类` 即可跑起来。
    - 头部集合语法 `Key$Value#Key$Value`，支持请求头与播放请求头（防防盗链）。
+   - **令牌自动续期**（移植 guoappxp `provider_xbpq_token.go`）：需要登录令牌的 XBPQ 源（如青空次元类站点）可配置 `刷新地址` / `刷新令牌` 字段，取流失败时自动用 refresh token 换一套新 access token、改写「头部集合」里的 `Authorization` 后重试一次；同一 endpoint 的刷新结果在 10 分钟窗口内复用，避免并发刷新把轮换后的旧 refresh token 顶掉。
 
 3. **分类浏览与智能排序筛选**：
    - 分类来自站源真实结构（A123 / 爱看 / 自定义源各自解析）。
@@ -89,7 +90,7 @@ npm run preview:pages  # 在 workerd 里跑 Pages Functions（8789，验证云�
 npm run build          # tsc + vite build
 npm run deploy:pages   # 构建并发布到 Cloudflare Pages
 npm run deploy:vercel  # 构建并发布到 Vercel（npx vercel deploy --prod）
-npm test               # 规则引擎 + 收藏夹 + 封面 + 边缘适配层 + Vercel 兼容层 + 端口限制冒烟测试（57 项，不联网）
+npm test               # 规则引擎 + 收藏夹 + 封面 + 边缘适配层 + Vercel 兼容层 + 端口限制 + XBPQ 令牌续期冒烟测试（64 项，不联网）
 ```
 
 > **为什么必须有服务端抓取层**：站点抓取、GBK 转码、m3u8 去广告、清单改写、跨源并发都受浏览器同源策略与防盗链限制，只能在服务端完成。**关键点：这套服务端抓取层在云端（Cloudflare Pages Functions 或 Vercel Functions）是原生运行的，部署后普通用户完全不需要本机服务**——`npm run dev` / `npm run serve` 只是本地开发调试用。前端始终只发同源 `/api/*`，云端由函数承担。

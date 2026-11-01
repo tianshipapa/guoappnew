@@ -313,7 +313,7 @@ async function dispatchResolve(payload) {
     if (!rule) return maccmsResolve({ chapter, name });
     const base = baseOf(payload, rule, '');
     if (!base) throw new Error('规则缺少站点地址');
-    return xbpqResolve({ rule, base, chapter, name });
+    return xbpqResolve({ rule, base, chapter, name, source });
   }
   throw new Error(`站源 ${source || '(空)'} 暂无取流接口`);
 }
