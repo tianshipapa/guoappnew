@@ -123,7 +123,6 @@ export async function safeFetchHtml(
 
 /**
  * Automatically convert GitHub blob URLs to raw GitHubusercontent URLs
- * e.g. https://github.com/user/repo/blob/main/path/file.json -> https://raw.githubusercontent.com/user/repo/main/path/file.json
  */
 export function normalizeGitHubUrl(url: string): string {
   if (!url) return '';
@@ -132,9 +131,8 @@ export function normalizeGitHubUrl(url: string): string {
     const parsed = new URL(trimmed);
     if (parsed.hostname === 'github.com' && parsed.pathname.includes('/blob/')) {
       const parts = parsed.pathname.split('/');
-      // /user/repo/blob/main/path/file.json -> ['', user, repo, 'blob', branch, ...path]
       if (parts.length >= 5 && parts[3] === 'blob') {
-        parts[3] = ''; // remove blob
+        parts[3] = '';
         const rawPath = parts.filter(Boolean).join('/');
         return `https://raw.githubusercontent.com/${rawPath}`;
       }
@@ -144,132 +142,81 @@ export function normalizeGitHubUrl(url: string): string {
 }
 
 /**
- * Parse JSONPath or dot notation: e.g. "data.list" or "title"
+ * TVBox xBPQ Substring Extractor: extracts text between left and right markers
  */
-function extractByJsonPath(obj: any, path: string): any {
-  if (!obj || !path) return '';
-  const clean = path.replace(/^json:/, '').replace(/^\$\./, '').trim();
-  const parts = clean.split('.');
-  let curr = obj;
-  for (const part of parts) {
-    if (curr == null) return '';
-    curr = curr[part];
-  }
-  return curr != null ? String(curr) : '';
-}
-
-/**
- * Core XBPQ token extractor with support for:
- * 1. || (fallback alternatives)
- * 2. $$ (boundary substring: start$$end)
- * 3. && (chaining: selector&&sub-selector&&attr)
- * 4. @ (attribute syntax: img@src, a@href)
- * 5. regex: (regex pattern)
- * 6. json: (json path)
- */
-export function extractByXbpqRule(
-  context: Element | Document | any,
+export function extractByXbpqSubstring(
+  html: string,
   ruleStr: string,
   baseUrl: string = ''
 ): string {
-  if (!context || !ruleStr) return '';
-  const cleanRule = ruleStr.trim();
+  if (!html || !ruleStr) return '';
+  const clean = ruleStr.trim();
 
-  // Support || (fallback alternatives): e.g. "img&&data-original||img&&src"
-  if (cleanRule.includes('||')) {
-    const branches = cleanRule.split('||');
-    for (const branch of branches) {
-      const val = extractByXbpqRule(context, branch.trim(), baseUrl);
-      if (val) return val;
-    }
-    return '';
+  let left = '';
+  let right = '';
+
+  if (clean.includes('&&')) {
+    const parts = clean.split('&&');
+    left = parts[0];
+    right = parts[1] || '';
+  } else {
+    left = clean;
   }
 
-  // JSON mode
-  if (cleanRule.startsWith('json:') || cleanRule.startsWith('$.')) {
-    return extractByJsonPath(context, cleanRule);
+  let sIdx = 0;
+  if (left) {
+    sIdx = html.indexOf(left);
+    if (sIdx === -1) return '';
+    sIdx += left.length;
   }
 
-  // Regex mode: regex:pattern
-  if (cleanRule.startsWith('regex:')) {
-    const pattern = cleanRule.replace(/^regex:/, '').trim();
-    const text = context instanceof Element ? context.outerHTML : String(context);
-    const m = new RegExp(pattern).exec(text);
-    return m ? m[1] || m[0] : '';
-  }
-
-  // $$ delimiter mode: start$$end
-  if (cleanRule.includes('$$')) {
-    const [start, end] = cleanRule.split('$$');
-    const text = context instanceof Element
-      ? context.outerHTML
-      : (context as Document)?.body?.innerHTML || String(context);
-    const sIdx = text.indexOf(start);
-    if (sIdx !== -1) {
-      const sub = text.substring(sIdx + start.length);
-      const eIdx = sub.indexOf(end);
-      return eIdx !== -1 ? sub.substring(0, eIdx).trim() : sub.trim();
-    }
-    return '';
-  }
-
-  // Convert @ syntax to &&: e.g. "img@data-src" -> "img&&data-src"
-  let ruleNorm = cleanRule;
-  if (ruleNorm.includes('@') && !ruleNorm.includes('&&')) {
-    const [sel, attr] = ruleNorm.split('@');
-    ruleNorm = `${sel.trim()}&&${attr.trim()}`;
-  }
-
-  // && syntax: selector&&attribute/Text
-  if (ruleNorm.includes('&&')) {
-    const parts = ruleNorm.split('&&');
-    const attr = parts[parts.length - 1].trim();
-    const selector = parts.slice(0, parts.length - 1).join('&&').trim();
-
-    const targetElement: Element | null = selector
-      ? context.querySelector(selector)
-      : context instanceof Element
-      ? context
-      : (context as Document).documentElement;
-
-    if (!targetElement) return '';
-
-    let val = '';
-    const attrLower = attr.toLowerCase();
-    if (attrLower === 'text') {
-      val = targetElement.textContent || '';
-    } else if (attrLower === 'html') {
-      val = targetElement.innerHTML || '';
-    } else {
-      val = targetElement.getAttribute(attr) || '';
-      // Fallback for image lazy loading
-      if (!val && (attr === 'data-original' || attr === 'src')) {
-        val =
-          targetElement.getAttribute('data-src') ||
-          targetElement.getAttribute('data-original') ||
-          targetElement.getAttribute('data-lazy-src') ||
-          targetElement.getAttribute('src') ||
-          '';
+  let eIdx = html.length;
+  if (right) {
+    eIdx = html.indexOf(right, sIdx);
+    if (eIdx === -1) {
+      if (right === '"' || right === "'") {
+        eIdx = html.indexOf('"', sIdx);
+        if (eIdx === -1) eIdx = html.indexOf("'", sIdx);
       }
+      if (eIdx === -1) eIdx = html.length;
     }
+  } else {
+    const nextSpace = html.indexOf(' ', sIdx);
+    const nextQuote = html.indexOf('"', sIdx);
+    const nextTag = html.indexOf('<', sIdx);
+    const candidates = [nextSpace, nextQuote, nextTag].filter((n) => n !== -1);
+    if (candidates.length > 0) {
+      eIdx = Math.min(...candidates);
+    }
+  }
 
-    val = val.trim();
-    // Resolve relative URL
-    if ((attr === 'href' || attr.includes('src') || attr.includes('url')) && val && baseUrl) {
+  let val = html.substring(sIdx, eIdx).trim();
+  val = val.replace(/<[^>]+>/g, '').trim();
+  val = val
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
+
+  if (
+    clean.includes('data-original') ||
+    clean.includes('src') ||
+    clean.includes('href') ||
+    clean.includes('http') ||
+    val.startsWith('//') ||
+    val.startsWith('/')
+  ) {
+    if (val.startsWith('//')) {
+      val = 'https:' + val;
+    } else if (val.startsWith('/') && baseUrl) {
       try {
         val = new URL(val, baseUrl).href;
       } catch (e) {}
     }
-    return val;
   }
 
-  // Pure selector text
-  if (context.querySelector) {
-    const el = context.querySelector(cleanRule);
-    return el ? (el.textContent || '').trim() : '';
-  }
-
-  return '';
+  return val;
 }
 
 /**
@@ -281,12 +228,12 @@ export function formatXbpqPageUrl(
   cateId: string,
   page: number
 ): string {
-  let template = rule.fenye || `${rule.url}/show/{cateId}--------{catePg}---.html`;
+  let template = rule.fenye || rule['分类url'] || `${rule.url}/show/{cateId}--------{catePg}---.html`;
   template = template
     .replace(/\{cateId\}|\[cateId\]|fyclass/g, cateId || '1')
     .replace(/\{catePg\}|\[catePg\]|fypage/g, String(page));
 
-  if (!template.startsWith('http')) {
+  if (!template.startsWith('http') && rule.url) {
     try {
       template = new URL(template, rule.url).href;
     } catch (e) {}
@@ -296,19 +243,18 @@ export function formatXbpqPageUrl(
 
 /**
  * Format search URL
- * Supports: {wd}, [wd], **, {pg}, [pg], fypage
  */
 export function formatXbpqSearchUrl(
   rule: XbpqRule,
   keyword: string,
   page: number = 1
 ): string {
-  let template = rule.search_url || `${rule.url}/index.php/vod/search.html?wd={wd}&page={pg}`;
+  let template = rule.search_url || rule['搜索url'] || `${rule.url}/index.php/vod/search.html?wd={wd}&page={pg}`;
   template = template
     .replace(/\{wd\}|\[wd\]|\*\*/g, encodeURIComponent(keyword))
     .replace(/\{pg\}|\[pg\]|fypage/g, String(page));
 
-  if (!template.startsWith('http')) {
+  if (!template.startsWith('http') && rule.url) {
     try {
       template = new URL(template, rule.url).href;
     } catch (e) {}
@@ -317,15 +263,30 @@ export function formatXbpqSearchUrl(
 }
 
 /**
- * Parse Category list from XBPQ rule
+ * Parse Category list from XBPQ rule (supports guoappxp Chinese keys)
  */
 export function parseXbpqCategories(rule: XbpqRule, html?: string): ParsedCategory[] {
   const result: ParsedCategory[] = [{ id: '', name: '全部' }];
 
-  // 1. Direct class_name & class_url definition
-  if (rule.class_name && rule.class_url) {
-    const names = rule.class_name.split('&');
-    const urls = rule.class_url.split('&');
+  const rawFenlei = rule.class_name || rule['分类'];
+  const rawFenleiUrl = rule.fenye || rule['分类url'] || rule.class_url;
+
+  if (rawFenlei) {
+    // Format 1: "电影$1#电视剧$2#综艺$3"
+    if (typeof rawFenlei === 'string' && rawFenlei.includes('#') && rawFenlei.includes('$')) {
+      const pairs = rawFenlei.split('#');
+      for (const pair of pairs) {
+        const [name, id] = pair.split('$');
+        if (name && id) {
+          result.push({ id: id.trim(), name: name.trim() });
+        }
+      }
+      return result;
+    }
+
+    // Format 2: "都市&战神&甜宠"
+    const names = rawFenlei.split('&');
+    const urls = rawFenleiUrl ? String(rawFenleiUrl).split('&') : [];
     const excludes = (rule.cate_exclude || '').split('&');
 
     for (let i = 0; i < names.length; i++) {
@@ -338,44 +299,17 @@ export function parseXbpqCategories(rule: XbpqRule, html?: string): ParsedCatego
     return result;
   }
 
-  // 2. Dynamic class_parse from HTML: e.g. "ul.nav li;a&&Text;a&&href;.*/(.*?).html"
-  if (rule.class_parse && html) {
-    try {
-      const parts = rule.class_parse.split(';');
-      const itemSel = parts[0]?.trim();
-      const nameRule = parts[1]?.trim() || 'a&&Text';
-      const urlRule = parts[2]?.trim() || 'a&&href';
-      const regPattern = parts[3]?.trim();
-
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(html, 'text/html');
-      const items = doc.querySelectorAll(itemSel);
-
-      items.forEach((item) => {
-        const name = extractByXbpqRule(item, nameRule, rule.url);
-        let url = extractByXbpqRule(item, urlRule, rule.url);
-        if (regPattern && url) {
-          const m = new RegExp(regPattern).exec(url);
-          if (m && m[1]) url = m[1];
-        }
-        if (name && url) {
-          result.push({ id: url, name });
-        }
-      });
-    } catch (e) {}
-  }
-
   return result;
 }
 
 /**
- * Parse Drama Catalog from HTML using XBPQ rule
+ * Parse Drama Catalog from HTML using TVBox xBPQ substring extraction
  */
 export function parseXbpqList(html: string, rule: XbpqRule): ParsedItem[] {
   if (!html) return [];
   const items: ParsedItem[] = [];
 
-  // Check if response is JSON API
+  // Check if JSON API
   if (html.trim().startsWith('{') || html.trim().startsWith('[')) {
     try {
       const json = JSON.parse(html);
@@ -394,37 +328,52 @@ export function parseXbpqList(html: string, rule: XbpqRule): ParsedItem[] {
     } catch (e) {}
   }
 
-  try {
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(html, 'text/html');
+  const listRule = rule.数组 || rule.list || '';
+  if (!listRule) return [];
 
-    const listSelector = rule.list || 'div.module-item, .stui-vodlist__item, .vod-item';
-    const elements = doc.querySelectorAll(listSelector);
+  let left = '';
+  let right = '';
+  if (listRule.includes('&&')) {
+    const parts = listRule.split('&&');
+    left = parts[0];
+    right = parts[1] || '';
+  } else {
+    left = listRule;
+  }
 
-    elements.forEach((el, index) => {
-      const title =
-        extractByXbpqRule(el, rule.title || 'h4&&Text||a&&title||.title&&Text', rule.url) ||
-        `短剧 ${index + 1}`;
+  if (!left) return [];
 
-      const cover =
-        extractByXbpqRule(
-          el,
-          rule.pic || 'img&&data-original||img&&data-src||img&&src',
-          rule.url
-        ) || '';
+  let pos = 0;
+  let count = 0;
+  while (pos < html.length && count < 150) {
+    const sIdx = html.indexOf(left, pos);
+    if (sIdx === -1) break;
+    const contentStart = sIdx + left.length;
 
-      const desc =
-        extractByXbpqRule(
-          el,
-          rule.desc || 'div.module-item-text&&Text||span.remarks&&Text||span&&Text',
-          rule.url
-        ) || '';
+    let eIdx = html.length;
+    if (right) {
+      eIdx = html.indexOf(right, contentStart);
+      if (eIdx === -1) eIdx = html.length;
+    } else {
+      eIdx = contentStart + 1000;
+    }
 
-      const link =
-        extractByXbpqRule(el, rule.link || 'a&&href', rule.url) || '';
+    const itemHtml = html.substring(contentStart, eIdx);
+    pos = eIdx;
+    count++;
 
-      const id = link ? link.replace(/[^a-zA-Z0-9_-]/g, '_') : `xbpq_${index + 1}`;
+    const titleRule = rule.标题 || rule.title || 'title="&&"';
+    const picRule = rule.列表图片 || rule.图片 || rule.pic || 'data-original="&&"';
+    const linkRule = rule.链接 || rule.link || 'href="&&"';
+    const descRule = rule.简介 || rule.副标题 || rule.desc || '';
 
+    const title = extractByXbpqSubstring(itemHtml, titleRule, rule.url) || `短剧 ${count}`;
+    const cover = extractByXbpqSubstring(itemHtml, picRule, rule.url) || '';
+    const link = extractByXbpqSubstring(itemHtml, linkRule, rule.url) || '';
+    const desc = descRule ? extractByXbpqSubstring(itemHtml, descRule, rule.url) : '';
+
+    if (title || link) {
+      const id = link ? link.replace(/[^a-zA-Z0-9_-]/g, '_') : `xbpq_${count}`;
       items.push({
         id,
         title,
@@ -433,84 +382,65 @@ export function parseXbpqList(html: string, rule: XbpqRule): ParsedItem[] {
         link,
         source: rule.name,
       });
-    });
-  } catch (err) {
-    console.warn('XBPQ List Parse Error:', err);
+    }
   }
 
   return items;
 }
 
 /**
- * Parse Drama Details & Episode List from HTML using XBPQ rule
+ * Parse Drama Details & Episode List from HTML using xBPQ rules
  */
 export function parseXbpqDetail(html: string, rule: XbpqRule): ParsedDetail {
   const result: ParsedDetail = {
     title: '',
     cover: '',
     desc: '',
-    tabs: ['默认线路'],
+    tabs: ['线路 1'],
     episodes: [],
     routes: ['线路 1'],
   };
 
   try {
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(html, 'text/html');
+    const titleRule = rule.标题 || rule.title || '<h1>&&</h1>';
+    const picRule = rule.列表图片 || rule.图片 || rule.pic || 'img src="&&"';
+    const contentRule = rule.简介 || rule.内容 || rule.desc || 'content="&&"';
 
-    result.title =
-      extractByXbpqRule(doc, rule.title || 'h1&&Text||.page-title&&Text||.detail-title&&Text', rule.url) ||
-      '短剧详情';
+    result.title = extractByXbpqSubstring(html, titleRule, rule.url) || '短剧详情';
+    result.cover = extractByXbpqSubstring(html, picRule, rule.url) || '';
+    result.desc = extractByXbpqSubstring(html, contentRule, rule.url) || '暂无剧情简介';
 
-    result.cover =
-      extractByXbpqRule(
-        doc,
-        rule.pic || '.detail-pic img&&src||img&&data-original||img&&src',
-        rule.url
-      ) || '';
+    // Parse playlist episodes using 播放数组 / 播放列表 / 播放链接 / 播放标题
+    const playlistRule = rule.播放数组 || rule.播放列表 || rule.lists || '<ul class="stui-content__playlist&&</ul>';
+    let playlistHtml = html;
+    if (playlistRule.includes('&&')) {
+      playlistHtml = extractByXbpqSubstring(html, playlistRule, rule.url) || html;
+    }
 
-    result.desc =
-      extractByXbpqRule(
-        doc,
-        rule.content || '.desc&&Text||.show-desc&&Text||meta[name="description"]&&content',
-        rule.url
-      ) || '暂无剧情简介';
+    const itemRule = rule.播放链接 || rule.dt_url || 'href="&&"';
+    const titleItemRule = rule.播放标题 || rule.dt_title || '>&&</a>';
 
-    // Tabs
-    if (rule.tabs) {
-      const tabElements = doc.querySelectorAll(rule.tabs);
-      if (tabElements.length > 0) {
-        result.tabs = Array.from(tabElements).map(
-          (t, i) => (t.textContent || '').trim() || `线路 ${i + 1}`
-        );
+    // Extract all playlist episode links and titles
+    let pos = 0;
+    let count = 0;
+    while (pos < playlistHtml.length && count < 200) {
+      // Find href or link pattern
+      const link = extractByXbpqSubstring(playlistHtml.substring(pos), itemRule, rule.url);
+      const epTitle = extractByXbpqSubstring(playlistHtml.substring(pos), titleItemRule, rule.url) || `第${count + 1}集`;
+
+      if (link) {
+        result.episodes.push({
+          number: count + 1,
+          title: epTitle,
+          url: link,
+        });
+        count++;
+        pos += Math.max(10, playlistHtml.substring(pos).indexOf(link) + link.length);
+      } else {
+        break;
       }
     }
 
-    // Episodes
-    const playlistContainer = rule.lists
-      ? doc.querySelector(rule.lists)
-      : doc.querySelector('.module-play-list-content, .stui-content__playlist, .playlist') || doc;
-
-    const dtUrlRule = rule.dt_url || 'a&&href';
-    const dtTitleRule = rule.dt_title || 'a&&Text||span&&Text';
-
-    if (playlistContainer) {
-      const epElements = playlistContainer.querySelectorAll('a');
-      epElements.forEach((epEl, idx) => {
-        const epTitle = extractByXbpqRule(epEl, dtTitleRule, rule.url) || `第${idx + 1}集`;
-        const epUrl = extractByXbpqRule(epEl, dtUrlRule, rule.url) || '';
-
-        if (epUrl || epTitle) {
-          result.episodes.push({
-            number: idx + 1,
-            title: epTitle,
-            url: epUrl,
-          });
-        }
-      });
-    }
-
-    // Fallback if no episodes extracted
     if (result.episodes.length === 0) {
       for (let i = 1; i <= 60; i++) {
         result.episodes.push({
@@ -528,101 +458,17 @@ export function parseXbpqDetail(html: string, rule: XbpqRule): ParsedDetail {
 }
 
 /**
- * Parse Search Results from HTML using XBPQ rule
+ * Parse Search Results using xBPQ rules
  */
 export function parseXbpqSearch(html: string, rule: XbpqRule): ParsedItem[] {
   if (!html) return [];
-  const searchList = rule.search_list || rule.list || 'div.module-item, .stui-vodlist__item';
-  const searchTitle = rule.search_title || rule.title || 'h4&&Text||a&&title';
-  const searchPic = rule.search_pic || rule.pic || 'img&&data-original||img&&src';
-  const searchLink = rule.search_link || rule.link || 'a&&href';
-  const searchDesc = rule.search_sub || rule.desc || 'div.module-item-text&&Text||span&&Text';
-
+  const searchListRule = rule.搜索数组 || rule.search_list || rule.数组 || rule.list || '';
   return parseXbpqList(html, {
     ...rule,
-    list: searchList,
-    title: searchTitle,
-    pic: searchPic,
-    link: searchLink,
-    desc: searchDesc,
+    数组: searchListRule,
+    list: searchListRule,
   });
 }
-
-/**
- * Universal XBPQ Templates for standard TVBox / CatVod compatibility
- */
-export const SAMPLE_XBPQ_TEMPLATES: XbpqRule[] = [
-  {
-    name: '短剧天堂 (XBPQ)',
-    url: 'https://www.duanjutv.cc',
-    headers: {
-      'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    },
-    class_name: '都市热播&战神逆袭&豪门甜宠&穿越古装&悬疑灵异',
-    class_url: 'dushi&zhanshen&haomen&chuanyue&xuanyi',
-    fenye: 'https://www.duanjutv.cc/show/{cateId}--------{catePg}---.html',
-    list: 'div.module-item',
-    title: 'div.module-item-title&&Text',
-    pic: 'img.lazyloaded&&data-src||img&&src',
-    desc: 'div.module-item-note&&Text',
-    link: 'a&&href',
-    content: 'div.show-desc&&Text',
-    tabs: 'div.module-tab-item',
-    lists: 'div.module-play-list-content',
-    dt_url: 'a&&href',
-    dt_title: 'span&&Text',
-    search_url: 'https://www.duanjutv.cc/search?wd={wd}&page={pg}',
-    search_list: 'div.module-item',
-    search_title: 'div.module-item-title&&Text',
-    search_pic: 'img&&data-src||img&&src',
-    play_parse: '1',
-  },
-  {
-    name: '星辰短剧库 (XBPQ)',
-    url: 'https://xingchen.tv',
-    headers: {
-      'User-Agent':
-        'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15',
-    },
-    class_name: '现代言情&玄幻修仙&赘婿逆袭&神医高手&重生复仇',
-    class_url: '1&2&3&4&5',
-    fenye: 'https://xingchen.tv/vod/show/id/{cateId}/page/{catePg}.html',
-    list: 'div.vod-item',
-    title: 'h3.title&&Text',
-    pic: 'img&&src',
-    desc: 'span.remarks&&Text',
-    link: 'a&&href',
-    tabs: '.nav-tabs li',
-    lists: '.playlist-content',
-    dt_url: 'a&&href',
-    dt_title: 'a&&Text',
-    search_url: 'https://xingchen.tv/vod/search/page/{pg}/wd/{wd}.html',
-    play_parse: '0',
-  },
-  {
-    name: '快看短剧 (XBPQ)',
-    url: 'https://www.kuaikandj.com',
-    headers: {
-      'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    },
-    class_name: '热门推荐&男频战神&女频甜宠&穿越重生&商战风云',
-    class_url: 'hot&nanpin&nvpin&chuanyue&shangzhan',
-    fenye: 'https://www.kuaikandj.com/list/{cateId}-{catePg}.html',
-    list: '.stui-vodlist__item',
-    title: '.stui-vodlist__thumb&&title',
-    pic: '.stui-vodlist__thumb&&data-original',
-    desc: '.stui-vodlist__thumb .pic-text&&Text',
-    link: '.stui-vodlist__thumb&&href',
-    tabs: '.nav-tabs li',
-    lists: '.stui-content__playlist',
-    dt_url: 'a&&href',
-    dt_title: 'a&&Text',
-    search_url: 'https://www.kuaikandj.com/search.php?searchword={wd}',
-    play_parse: '1',
-  },
-];
 
 /**
  * Normalize guoappxp Chinese rule keys to standard XbpqRule format
@@ -634,10 +480,8 @@ export function normalizeGuoappxpRule(raw: any): XbpqRule {
   if (rule['主页url'] && !rule.url) rule.url = rule['主页url'];
   if (rule['分类'] && !rule.class_name) {
     const fenlei = rule['分类'];
-    if (typeof fenlei === 'string' && fenlei.includes('#') && fenlei.includes('$')) {
-      const parts = fenlei.split('#');
-      rule.class_name = parts.map((p: string) => p.split('$')[0]).join('&');
-      rule.class_url = parts.map((p: string) => p.split('$')[1] || p.split('$')[0]).join('&');
+    if (typeof fenlei === 'string' && (fenlei.includes('#') || fenlei.includes('$'))) {
+      rule.class_name = fenlei;
     } else {
       rule.class_name = fenlei;
     }
@@ -659,3 +503,27 @@ export function normalizeGuoappxpRule(raw: any): XbpqRule {
 
   return rule;
 }
+
+/**
+ * Universal XBPQ Templates
+ */
+export const SAMPLE_XBPQ_TEMPLATES: XbpqRule[] = [
+  {
+    name: '短剧天堂 (XBPQ)',
+    url: 'https://www.duanjutv.cc',
+    headers: {
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    },
+    class_name: '都市热播&战神逆袭&豪门甜宠&穿越古装&悬疑灵异',
+    class_url: 'dushi&zhanshen&haomen&chuanyue&xuanyi',
+    fenye: 'https://www.duanjutv.cc/show/{cateId}--------{catePg}---.html',
+    list: 'div.module-item',
+    title: 'div.module-item-title&&Text',
+    pic: 'img.lazyloaded&&data-src||img&&src',
+    desc: 'div.module-item-note&&Text',
+    link: 'a&&href',
+    search_url: 'https://www.duanjutv.cc/search?wd={wd}&page={pg}',
+    play_parse: '1',
+  },
+];
