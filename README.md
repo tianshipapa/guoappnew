@@ -159,7 +159,7 @@ Web Request ↔ Node 的翻译桥（`functions/_lib/bridge.mjs`）。
 
 ```
 api/[...path].js          # Vercel Node 入口：/api/* 全部交给 router
-vercel.json               # 构建命令 + SPA 回退 + 函数运行时/超时
+vercel.json               # 构建命令 + SPA 回退 + 函数超时（Node 版本由 package.json engines.node 锁定）
 server/router.mjs         # 运行时无关的抓取路由（与本地、Cloudflare 同一份代码）
 server/index.mjs          # Node 外壳：静态托管 + 磁盘存储（本地用）
 ```

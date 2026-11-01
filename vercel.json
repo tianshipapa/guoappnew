@@ -8,7 +8,6 @@
   ],
   "functions": {
     "api/[...path].js": {
-      "runtime": "@vercel/node@22",
       "maxDuration": 60
     }
   }
