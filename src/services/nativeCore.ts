@@ -35,7 +35,25 @@ export const DEFAULT_CORE_BASE = 'http://127.0.0.1:8788';
 
 let healthPromise: Promise<boolean> | null = null;
 let healthState: { ok: boolean; at: number } | null = null;
-const HEALTH_TTL = 15000;
+const HEALTH_TTL_OK = 15000; // 在线结果缓存较久，避免频繁打扰
+const HEALTH_TTL_FAIL = 5000; // 离线结果缓存较短，尽快重试恢复
+const HEALTH_TIMEOUT = 10000; // 容忍边缘函数冷启动 / 瞬时抖动（原先 4s 太短）
+
+/** 单次健康检查；超时（冷启动）或网络错误都归为 false，不抛异常。 */
+function checkHealth(timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    fetch(coreURL('/api/health'), {
+      signal: controller.signal,
+      mode: 'cors',
+      cache: 'no-store',
+    })
+      .then((response) => resolve(response.ok))
+      .catch(() => resolve(false))
+      .finally(() => clearTimeout(timer));
+  });
+}
 
 function isLocalHostName(host: string): boolean {
   return (
@@ -119,32 +137,29 @@ function encodePayload(payload: unknown): string {
     .replace(/=+$/, '');
 }
 
-/** 服务端是否可用（结果缓存 15 秒，force 时立即重测）。 */
+/** 服务端是否可用（结果缓存，force 时立即重测）。 */
 export function isCoreOnline(force = false): Promise<boolean> {
   const now = Date.now();
-  if (!force && healthState && now - healthState.at < HEALTH_TTL) {
-    return Promise.resolve(healthState.ok);
+  if (!force && healthState) {
+    const ttl = healthState.ok ? HEALTH_TTL_OK : HEALTH_TTL_FAIL;
+    if (now - healthState.at < ttl) return Promise.resolve(healthState.ok);
   }
   if (!force && healthPromise) return healthPromise;
-  if (force) healthPromise = null;
+  if (force) {
+    healthPromise = null;
+    healthState = null;
+  }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 4000);
-  healthPromise = fetch(coreURL('/api/health'), {
-    signal: controller.signal,
-    mode: 'cors',
-    cache: 'no-store',
-  })
-    .then((response) => response.ok)
-    .catch(() => false)
-    .then((ok) => {
-      healthState = { ok, at: Date.now() };
-      return ok;
-    })
-    .finally(() => {
-      clearTimeout(timer);
-      healthPromise = null;
-    });
+  // 先测一次；超时（冷启动）才补测一次以吸收边缘函数首次拉起；
+  // 若是硬网络错误（连接被拒等）则不再重试，快速判定离线。
+  healthPromise = (async () => {
+    let ok = await checkHealth(HEALTH_TIMEOUT);
+    if (!ok) ok = await checkHealth(Math.min(HEALTH_TIMEOUT, 6000));
+    healthState = { ok, at: Date.now() };
+    return ok;
+  })().finally(() => {
+    healthPromise = null;
+  });
   return healthPromise;
 }
 
