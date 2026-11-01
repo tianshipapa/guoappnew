@@ -92,7 +92,7 @@ npm run deploy:vercel  # 构建并发布到 Vercel（npx vercel deploy --prod）
 npm test               # 规则引擎 + 收藏夹 + 封面 + 边缘适配层 + Vercel 兼容层 + 端口限制冒烟测试（57 项，不联网）
 ```
 
-> **为什么必须有服务端抓取层**：站点抓取、GBK 转码、m3u8 去广告、清单改写、跨源并发都受浏览器同源策略与防盗链限制，只能在服务端完成。`npm run dev` 时它以 Vite 插件中间件形式挂载在同一端口；云端则由 Pages Functions 承担，前端始终只发同源 `/api/*`。
+> **为什么必须有服务端抓取层**：站点抓取、GBK 转码、m3u8 去广告、清单改写、跨源并发都受浏览器同源策略与防盗链限制，只能在服务端完成。**关键点：这套服务端抓取层在云端（Cloudflare Pages Functions 或 Vercel Functions）是原生运行的，部署后普通用户完全不需要本机服务**——`npm run dev` / `npm run serve` 只是本地开发调试用。前端始终只发同源 `/api/*`，云端由函数承担。
 
 ### 部署到 Cloudflare Pages（推荐：同源 Functions，不依赖本机）
 
@@ -150,18 +150,23 @@ npm run preview:pages     # http://127.0.0.1:8789
 
 ### 部署到 Vercel（同源 Node Functions，免翻译桥）
 
-抓取层对 Vercel 同样是「同源 Function」：`api/[...path].js` 把 `/api/*` 直接交给
+抓取层对 Vercel 同样是「同源 Function」：`api/[...path].mjs` 把 `/api/*` 直接交给
 `server/router.mjs`。与 Cloudflare 的不同点只在「外壳」——Vercel 的 Node 运行时原生就是 Node 的
 `req`/`res`，`router.mjs` 的「类 Node 契约」直接满足，**不需要**像 Cloudflare 那样写一层
 Web Request ↔ Node 的翻译桥（`functions/_lib/bridge.mjs`）。
 
+> **关于 `.mjs` 扩展名**：Vercel 的 Node 函数即使在 `package.json` 里设了 `"type": "module"`，
+> 历史上仍可能把 `api/` 下的 `.js` 当 CommonJS 处理，导致 `import` 直接语法报错、函数加载失败、
+> `/api/health` 永远 500。Vercel 官方保证 `.mjs` 一定按 ESM 执行，所以入口用 `.mjs`。
+> `vercel.json` 的 `rewrites` 也已排除 `/api/`，避免 SPA 回退把接口抢走。
+
 目录分工：
 
 ```
-api/[...path].js          # Vercel Node 入口：/api/* 全部交给 router
-vercel.json               # 构建命令 + SPA 回退 + 函数超时（Node 版本由 package.json engines.node 锁定）
+api/[...path].mjs         # Vercel Node 入口（ESM）：/api/* 全部交给 router
+vercel.json               # 构建命令 + SPA 回退（已排除 /api/）+ 函数超时（Node 版本由 package.json engines.node 锁定）
 server/router.mjs         # 运行时无关的抓取路由（与本地、Cloudflare 同一份代码）
-server/index.mjs          # Node 外壳：静态托管 + 磁盘存储（本地用）
+server/index.mjs          # Node 外壳：静态托管 + 磁盘存储（本地开发用，云端不依赖）
 ```
 
 部署步骤：

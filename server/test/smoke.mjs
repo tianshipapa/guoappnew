@@ -473,7 +473,7 @@ console.log('边缘端口限制（仅 Cloudflare，不误伤 Vercel）');
 
 // ---------------------------------------------------------------- Vercel 兼容层
 // Vercel 的 Node.js 运行时原生就是 Node 的 req/res（http.IncomingMessage /
-// http.ServerResponse），api/[...path].js 直接把 req/res 喂给 handleRequest，
+// http.ServerResponse），api/[...path].mjs 直接把 req/res 喂给 handleRequest，
 // 没有 Cloudflare 那种 Web Request ↔ Node 的翻译桥。这里用 mock 的 Node req/res
 // 直接驱动该入口，验「免桥接」契约与 POST body 兜底（adaptReq 把 req.body 归一为 Buffer）。
 console.log('Vercel 兼容层（Node req/res 免桥接）');
@@ -484,7 +484,7 @@ console.log('Vercel 兼容层（Node req/res 免桥接）');
 
   // 文件名含 [...]，Node 的 import() 会把 [ 当成 IPv6 分隔符，先把方括号 percent-encode。
   const here = dirname(fileURLToPath(import.meta.url));
-  const vercelPath = join(here, '..', '..', 'api', '[...path].js');
+  const vercelPath = join(here, '..', '..', 'api', '[...path].mjs');
   const vercelURL = pathToFileURL(vercelPath).href.replace(/\[/g, '%5B').replace(/\]/g, '%5D');
   const { default: vercelHandler } = await import(vercelURL);
 

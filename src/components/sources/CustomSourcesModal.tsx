@@ -562,8 +562,8 @@ export const CustomSourcesModal: React.FC<CustomSourcesModalProps> = ({
             <div className="flex flex-wrap items-center gap-2 text-amber-300">
               <AlertCircle className="w-3.5 h-3.5 shrink-0" />
               <span>
-                未连接抓取服务。云端部署请确认 <code className="mx-1 px-1 rounded bg-slate-800 text-amber-200">functions/</code>
-                已随站点一起发布；本地请运行
+                未连接抓取服务。云端部署请确认 <code className="mx-1 px-1 rounded bg-slate-800 text-amber-200">api/</code>（Vercel）或
+                <code className="mx-1 px-1 rounded bg-slate-800 text-amber-200">functions/</code>（Cloudflare）已随前端一起发布；本地请运行
                 <code className="mx-1 px-1 rounded bg-slate-800 text-amber-200">npm run serve</code>。
               </span>
               <div className="flex items-center gap-1.5 ml-auto">

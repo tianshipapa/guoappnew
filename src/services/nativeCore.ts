@@ -163,7 +163,7 @@ export function isCoreOnline(force = false): Promise<boolean> {
   return healthPromise;
 }
 
-const OFFLINE_HINT = `抓取服务无响应（${coreURL('/api/health')}）。本地请运行 npm run serve；云端请确认 Pages Functions 已随 dist 一起部署`;
+const OFFLINE_HINT = `抓取服务无响应（${coreURL('/api/health')}）。请确认云端 Functions（api/ 或 functions/ 目录）已随前端一起发布，或本地已运行 npm run serve`;
 
 async function post<T = any>(path: string, body: unknown): Promise<T> {
   const url = coreURL(path);

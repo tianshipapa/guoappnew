@@ -51,7 +51,7 @@ export const CoreStatusPill: React.FC<CoreStatusPillProps> = ({ onClick }) => {
         onClick?.();
       }}
       className="flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-500/15 border border-amber-500/40 text-amber-300 text-[11px] font-medium hover:bg-amber-500/25 transition-colors shrink-0"
-      title="未连接抓取服务：云端请确认 Pages Functions 已部署，本地请运行 npm run serve；点此可修改地址"
+      title="未连接抓取服务：云端部署请确认 Functions（api/ 或 functions/ 目录）已随前端发布，本地请运行 npm run serve；点此可修改地址"
     >
       {checking ? (
         <Loader2 className="w-3 h-3 animate-spin" />
