@@ -322,4 +322,65 @@ console.log('收藏夹共享库');
   });
 }
 
+// ---------------------------------------------------------------- 封面处理
+console.log('封面处理');
+{
+  const { imageMime, decodeCover, coverReferer, needsCoverProxy, encryptForTest } = await import(
+    '../lib/covers.mjs'
+  );
+
+  // 构造一个足够长的假 JPEG 头（真实图床返回的字节会更多，但识别只看头部）
+  const fakeJpeg = Buffer.concat([
+    Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01]),
+    Buffer.alloc(48, 0x20),
+  ]);
+
+  check('识别 jpeg / png / webp / svg', () => {
+    assert.equal(imageMime(fakeJpeg), 'image/jpeg');
+    assert.equal(imageMime(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0])), 'image/png');
+    const webp = Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WEBP'), Buffer.alloc(8)]);
+    assert.equal(imageMime(webp), 'image/webp');
+    assert.equal(imageMime(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>')), 'image/svg+xml');
+    assert.equal(imageMime(Buffer.from('not an image at all')), '');
+  });
+
+  check('明文图片直通，不做多余解码', () => {
+    assert.deepEqual(decodeCover(fakeJpeg), fakeJpeg);
+  });
+
+  check('AES-CBC 加密的封面能还原', () => {
+    const encrypted = encryptForTest(fakeJpeg);
+    assert.equal(imageMime(encrypted), '', '密文不应被认成图片');
+    assert.equal(imageMime(decodeCover(encrypted)), 'image/jpeg');
+  });
+
+  check('Salted__ 前缀的密文也能还原', () => {
+    const encrypted = Buffer.concat([Buffer.from('Salted__'), Buffer.alloc(8), encryptForTest(fakeJpeg)]);
+    assert.equal(imageMime(decodeCover(encrypted)), 'image/jpeg');
+  });
+
+  check('XOR 混淆的封面能还原', () => {
+    const key = Buffer.from('2019ysapp7527');
+    const xored = Buffer.from(fakeJpeg);
+    for (let i = 0; i < Math.min(100, xored.length); i += 1) xored[i] ^= key[i % key.length];
+    assert.equal(imageMime(decodeCover(xored)), 'image/jpeg');
+  });
+
+  check('豆瓣图床补 movie.douban.com 的 Referer', () => {
+    assert.equal(coverReferer('https://img9.doubanio.com/view/photo/x.jpg'), 'https://movie.douban.com/');
+    assert.equal(coverReferer('https://img1.douban.com/x.jpg'), 'https://movie.douban.com/');
+    // 其他源不设 Referer，乱设会被部分 CDN 拒绝
+    assert.equal(coverReferer('https://i1.a123tv.com/d/hk/34r6.jpg'), '');
+    assert.equal(coverReferer('https://img9.doubanio.com/x.jpg', 'https://custom/'), 'https://custom/');
+  });
+
+  check('只有豆瓣图床需要走服务端代理', () => {
+    assert.equal(needsCoverProxy('https://img9.doubanio.com/view/photo/x.jpg'), true);
+    assert.equal(needsCoverProxy('https://i1.a123tv.com/d/hk/34r6.jpg'), false);
+    assert.equal(needsCoverProxy('https://snzypic.vip/upload/vod/a.jpg'), false);
+    assert.equal(needsCoverProxy('/relative/path.jpg'), false);
+    assert.equal(needsCoverProxy(''), false);
+  });
+}
+
 console.log(`\n通过 ${passed} 项${process.exitCode ? '（有失败）' : '，全部正常'}`);

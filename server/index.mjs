@@ -24,10 +24,12 @@
 //   GET  /api/media              分片 / 直链转发（保留 Range）
 
 import { createServer } from 'node:http';
+import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize as normalizePath } from 'node:path';
 
 import { fetchText, fetchBinary, mergeHeaders, DEFAULT_UA } from './lib/http.mjs';
+import { resolveCover, coverCacheStats } from './lib/covers.mjs';
 import { parseRule, normalizeKey } from './lib/xbpq/rule.mjs';
 import { detectFamilies } from './lib/xbpq/template.mjs';
 import {
@@ -89,6 +91,11 @@ import {
 const BODY_LIMIT = 4 << 20;
 const SEARCH_SESSION_TTL = 5 * 60 * 1000;
 const SEARCH_SOURCE_TIMEOUT = 25000;
+/** 封面抓取失败时返回的 1x1 透明 PNG（避免列表出现破图图标）。 */
+const BLANK_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+  'base64'
+);
 
 // ---------------------------------------------------------------- 站源调度
 
@@ -616,6 +623,51 @@ async function handleRequest(req, res, url) {
       }
     }
     return res.end();
+  }
+
+  if (path === '/api/cover') {
+    // 封面代理：豆瓣图床按 Referer 防盗链（无 Referer 直接 418），
+    // 浏览器直连拿不到图，统一由这里补 Referer + 本地缓存后回传。
+    const target = query.get('u') || query.get('url');
+    if (!target) return sendJSON(res, 400, { ok: false, error: '缺少 u 参数' });
+    const referer = query.get('r') || '';
+    const source = query.get('s') || '';
+    const force = query.get('force') === '1';
+    let cover;
+    try {
+      cover = await resolveCover(target, { referer, source, force });
+    } catch (error) {
+      // 抓不到就回一张 1x1 透明 PNG，避免列表页出现破图图标
+      res.writeHead(200, {
+        'Content-Type': 'image/png',
+        'Cache-Control': 'no-store',
+        'Access-Control-Allow-Origin': '*',
+        'X-Cover-Error': encodeURIComponent(error?.message || '封面获取失败'),
+      });
+      return res.end(BLANK_PNG);
+    }
+    const etag = `"${createHash('sha1').update(cover.data).digest('hex')}"`;
+    if (req.headers['if-none-match'] === etag) {
+      res.writeHead(304, {
+        ETag: etag,
+        'Cache-Control': 'public, max-age=2592000, immutable',
+        'Access-Control-Allow-Origin': '*',
+      });
+      return res.end();
+    }
+    res.writeHead(200, {
+      'Content-Type': cover.type,
+      'Content-Length': cover.data.length,
+      'Cache-Control': 'public, max-age=2592000, immutable',
+      ETag: etag,
+      'Access-Control-Allow-Origin': '*',
+      'X-Cover-Cache': cover.cached ? 'hit' : 'miss',
+    });
+    return res.end(cover.data);
+  }
+
+  if (path === '/api/cover/stats') {
+    return sendJSON(res, 200, { ok: true, ...coverCacheStats() });
   }
 
   if (path === '/api/live/sources') {

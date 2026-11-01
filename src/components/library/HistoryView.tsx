@@ -3,6 +3,7 @@ import { Play, Trash2, Search, CheckSquare, Square, History } from 'lucide-react
 import { HistoryItem, Drama } from '../../types';
 import { matchesPinyin } from '../../utils/pinyin';
 import { SAMPLE_DRAMAS } from '../../data/sampleDramas';
+import { CoverImage } from '../common/CoverImage';
 
 interface HistoryViewProps {
   history: HistoryItem[];
@@ -201,12 +202,12 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
 
                 {/* Poster Cover */}
                 <div className="relative w-16 sm:w-20 aspect-[3/4] rounded-lg overflow-hidden bg-slate-950 shrink-0 border border-slate-800">
-                  <img
+                  <CoverImage
                     src={item.cover}
+                    source={item.source}
                     alt={item.title}
                     loading="lazy"
                     className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                    onError={(e) => ((e.target as HTMLElement).style.display = 'none')}
                   />
                   <div className="absolute top-1 left-1 px-1 py-0.2 rounded bg-black/70 text-[9px] text-slate-200">
                     {item.sourceName || item.source}

@@ -1,6 +1,7 @@
 import React from 'react';
 import { Bookmark, Flame, Play, Eye } from 'lucide-react';
 import { Drama } from '../../types';
+import { CoverImage } from '../common/CoverImage';
 
 interface DramaCardProps {
   drama: Drama;
@@ -26,38 +27,36 @@ export const DramaCard: React.FC<DramaCardProps> = ({
     >
       {/* Poster Container */}
       <div className="relative aspect-[3/4] w-full overflow-hidden bg-slate-950">
-        <img
+        <CoverImage
           src={drama.cover}
+          source={drama.source}
           alt={drama.title}
           loading="lazy"
           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-          onError={(e) => {
-            // Fallback gradient placeholder
-            (e.target as HTMLElement).style.display = 'none';
-          }}
         />
 
         {/* Gradient Overlay */}
         <div className="absolute inset-0 bg-gradient-to-t from-[#0e121d] via-transparent to-black/30 opacity-80 group-hover:opacity-60 transition-opacity" />
 
-        {/* Top Badges */}
-        <div className="absolute top-2 left-2 right-2 flex items-center justify-between gap-1 pointer-events-none">
-          <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-black/60 backdrop-blur-md text-slate-200 border border-white/10">
+        {/* Top Badges：3 列布局下卡片只有 ~120px 宽，小屏只留状态徽章，
+            源名交给下方标签区，避免出现「爱看机…」这种半截文字 */}
+        <div className="absolute top-2 left-2 right-2 flex items-center justify-end sm:justify-between gap-1 pointer-events-none">
+          <span className="hidden sm:inline-block px-1.5 py-0.5 text-[10px] font-semibold rounded bg-black/60 backdrop-blur-md text-slate-200 border border-white/10 truncate max-w-[52%] min-w-0">
             {drama.sourceName || drama.source}
           </span>
 
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1 shrink-0">
             {drama.vip && (
               <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-amber-500 text-black shadow-sm">
                 VIP
               </span>
             )}
             <span
-              className={`px-1.5 py-0.5 text-[10px] font-medium rounded backdrop-blur-md ${
+              className={`px-1 py-0.5 text-[10px] font-medium rounded backdrop-blur-md whitespace-nowrap ${
                 isFinished ? 'bg-emerald-600/80 text-white' : 'bg-rose-600/80 text-white'
               }`}
             >
-              {isFinished ? '已完结' : '连载中'}
+              {isFinished ? '完结' : '连载'}
             </span>
           </div>
         </div>
@@ -110,23 +109,26 @@ export const DramaCard: React.FC<DramaCardProps> = ({
       </div>
 
       {/* Info Container */}
-      <div className="p-2.5 flex-1 flex flex-col justify-between">
+      <div className="p-2 sm:p-2.5 flex-1 flex flex-col justify-between">
         <div>
           <h3
-            className="text-xs md:text-sm font-semibold text-slate-100 group-hover:text-rose-400 transition-colors line-clamp-1"
+            className="text-[11px] sm:text-xs md:text-sm font-semibold text-slate-100 group-hover:text-rose-400 transition-colors line-clamp-1"
             title={drama.title}
           >
             {drama.title}
           </h3>
 
-          <p className="mt-1 text-[11px] text-slate-400 line-clamp-2 leading-relaxed">
-            {drama.description}
-          </p>
+          {/* 3 列布局下卡片很窄，描述只在大屏显示一行，避免挤压封面 */}
+          <div className="mt-1 hidden sm:block">
+            <p className="text-[11px] text-slate-400 line-clamp-1 leading-relaxed">
+              {drama.description}
+            </p>
+          </div>
         </div>
 
         {/* Tags and Peers */}
         <div className="mt-2 pt-2 border-t border-slate-800/60 flex flex-wrap items-center gap-1">
-          {drama.tags.slice(0, 3).map((tag) => (
+          {drama.tags.slice(0, 2).map((tag) => (
             <span
               key={tag}
               className="px-1.5 py-0.5 text-[10px] rounded bg-slate-800 text-slate-300"

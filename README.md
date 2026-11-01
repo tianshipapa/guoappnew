@@ -8,6 +8,7 @@
    - 原生实现的站源：**A123**（a123tv）、**爱看机器人**（ikanbot，含令牌签名）、**鬼片**（guipianwu）、**韩小圈**（jennyhow）、**XBPQ 网页规则源**（远程订阅）、任意 **自定义源**（XBPQ / MacCMS 接口）。
    - 内置站源收敛为 5 个：`网页`（XBPQ 聚合）/ `A123` / `爱看机器人` / `韩小圈` / `鬼片`。红果、黄果、野果、黄豆等**需要 CENC 解密、浏览器无法播放**的源已全部移除，不再出现在源列表里。
    - 源显示列表：可按需显示或隐藏任意内置与自定义站源。
+   - **封面代理**：爱看机器人的海报全部指向豆瓣 CDN（`img1/2/3/9.doubanio.com`），豆瓣图床按 Referer 防盗链——浏览器 `<img>` 带的是本站页面 Referer，实测直接回 **HTTP 418**（0 字节），列表页会出现大片空封面。前端把豆瓣域名的图统一改走 `/api/cover`，服务端补 `movie.douban.com` 的 Referer 后再回传，并按 `sha256(source+url)` 落盘缓存（TTL 30 天 / 256MB / 2000 条 / 4 路并发）。A123、鬼片等图床无防盗链，保持直连不绕行。
 
 2. **XBPQ 规则体系（TVBox / CatVod csp_XBPQ 兼容）**：
    - 截取语法：`start&&end` 截取、`||` 多组备选、`\` 转义、`*` 惰性通配锚点、`+` 顶层拼接、`Base64` / `Base64(a&&b)` 二次解码。
@@ -20,6 +21,7 @@
 3. **分类浏览与智能排序筛选**：
    - 分类来自站源真实结构（A123 / 爱看 / 自定义源各自解析）。
    - 排序与筛选：默认排序、热度最高、播放量最多、最新上线、连载中 / 已完结。
+   - 首页网格 **手机端 3 列**（`grid-cols-3` → `sm:4 / md:5 / lg:6`），一屏能看更多海报；对应的卡片在小屏收起描述行、顶部只留状态徽章，避免出现「爱看机…」这类半截文字。
 
 4. **全源并发聚合搜索 (Cross-Source Aggregate Search)**：
    - 服务端 **会话式并发抓取**：`/api/search/start` 立即返回会话号，前端轮询 `/api/search/poll` 增量刷新，先出的源先展示，不用等最慢的源。
@@ -83,7 +85,7 @@ npm install
 npm run dev      # 前端 + 抓取服务（Vite 中间件同源挂载，推荐）
 npm run serve    # 仅抓取服务，独立跑在 8788 端口（生产静态托管时用）
 npm run build    # tsc + vite build
-npm test         # 规则引擎 + 收藏夹语义冒烟测试（37 项，不联网）
+npm test         # 规则引擎 + 收藏夹 + 封面处理冒烟测试（44 项，不联网）
 ```
 
 > **为什么必须有本地抓取服务**：站点抓取、GBK 转码、m3u8 去广告、清单改写、跨源并发都受浏览器同源策略与防盗链限制，只能在服务端完成。`npm run dev` 时它以 Vite 插件中间件形式挂载在同一端口，前端只发同源 `/api/*`，开箱即用。
@@ -135,6 +137,8 @@ npm run serve          # 默认 http://127.0.0.1:8788
 | GET | `/api/proxy` | 原始抓取（调试 / 订阅导入） |
 | GET | `/api/hls` | m3u8 改写 + 去广告 |
 | GET | `/api/media` | 分片 / 直链转发（保留 Range） |
+| GET | `/api/cover` | 封面代理（补 Referer + 磁盘缓存 + 兜底解码） |
+| GET | `/api/cover/stats` | 封面缓存统计（条数 / 占用 / 目录） |
 | GET | `/api/library` | 读收藏夹与播放记录（服务端共享库） |
 | POST | `/api/library` | 写收藏夹：`{list, op, item, keys}` |
 
@@ -157,6 +161,18 @@ POST /api/library
 - `toggle`：存在则删、不存在则加（收藏按钮用）。
 - 写入走「临时文件 + `rename`」原子落盘，并发请求用 Promise 串行化，中途退出不会写坏收藏夹。
 - 存储位置默认 `server/data/library.json`（已在 `.gitignore` 中忽略）。
+
+### `/api/cover` 封面代理
+
+```
+GET /api/cover?u=<封面原地址>&s=<站源>&r=<自定义Referer>&force=1
+```
+
+- **Referer 策略**：豆瓣域名（`*.doubanio.com` / `*.douban.com`）→ `https://movie.douban.com/`；其它不设 Referer（乱设反而会被部分 CDN 拒绝）。`r` 参数可显式覆盖。
+- **兜底解码**：对齐 guoappxp `nativeCoreDecodeCover` —— 字节头不是已知图片格式时，先试 AES-128-CBC（key `f5d965df75336270` / iv `97b60394abc2fbe1`，兼容 `Salted__` 前缀），再试 XOR（`2019ysapp7527` 前 100 字节）。
+- **缓存**：`server/data/covers/<sha256>.img`，TTL 30 天、上限 256MB / 2000 条、按 LRU 淘汰；响应带 `ETag` 与 `Cache-Control: public, max-age=2592000, immutable`，命中 `If-None-Match` 直接 304。
+- **并发**：下载限制 4 路（对齐 Go 版 `slots` 容量 4），同一张图并发请求会合并成一次下载。
+- **失败兜底**：抓不到时回 1×1 透明 PNG 并带 `X-Cover-Error` 头，页面不会出现破图图标。
 
 ### 网络环境说明
 

@@ -16,6 +16,7 @@ import { Drama, Episode, DramaDetail, UserSettings, HistoryItem } from '../../ty
 import { apiService } from '../../services/api';
 import { VideoPlayer } from '../player/VideoPlayer';
 import { EpisodeDrawer } from '../player/EpisodeDrawer';
+import { CoverImage } from '../common/CoverImage';
 
 interface DramaDetailViewProps {
   drama: Drama;
@@ -168,11 +169,12 @@ export const DramaDetailView: React.FC<DramaDetailViewProps> = ({
           <div className="flex flex-col md:flex-row gap-5">
             {/* Poster thumbnail */}
             <div className="w-24 sm:w-32 aspect-[3/4] rounded-xl overflow-hidden bg-slate-950 border border-slate-800 shrink-0 shadow-lg">
-              <img
+              <CoverImage
                 src={drama.cover}
+                source={drama.source}
                 alt={drama.title}
+                loading="eager"
                 className="w-full h-full object-cover"
-                onError={(e) => ((e.target as HTMLElement).style.display = 'none')}
               />
             </div>
 

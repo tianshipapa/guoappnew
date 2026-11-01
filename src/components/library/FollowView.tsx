@@ -3,6 +3,7 @@ import { Bookmark, Search, Trash2, CheckSquare, Square, Play, RotateCcw } from '
 import { FavoriteItem, HistoryItem, Drama, FollowStatus } from '../../types';
 import { matchesPinyin } from '../../utils/pinyin';
 import { SAMPLE_DRAMAS } from '../../data/sampleDramas';
+import { CoverImage } from '../common/CoverImage';
 
 interface FollowViewProps {
   favorites: FavoriteItem[];
@@ -213,12 +214,12 @@ export const FollowView: React.FC<FollowViewProps> = ({
               >
                 {/* Poster Container */}
                 <div className="relative aspect-[3/4] w-full bg-slate-950 overflow-hidden">
-                  <img
+                  <CoverImage
                     src={item.cover}
+                    source={item.source}
                     alt={item.title}
                     loading="lazy"
                     className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                    onError={(e) => ((e.target as HTMLElement).style.display = 'none')}
                   />
 
                   {/* Gradient Overlay */}
