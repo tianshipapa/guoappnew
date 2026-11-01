@@ -94,15 +94,25 @@ const FAMILIES = [
     },
   },
   {
-    // 通用高频兜底：只补全局最稳的字段，不猜 数组/播放数组 这类站专属结构。
+    // 通用高频兜底：对未命中以上特定家族的 HTML 站点补最常见的列表/播放截取 pattern，
+    // 让「只写 分类url + 分类」的纯简写规则也能跑通（对齐 guoappxp 的通用模板能力）。
     name: '通用高频',
     match: /./,
     fields: {
       标题: 'title="&&"||alt="&&"',
       链接: 'href="&&"',
       图片: 'data-original="&&"||data-src="&&"||src="&&"',
-      播放标题: '>&&</a>||>&&<',
+      副标题: 'class="remark">&&<||class="module-item-text">&&</div>||class="text-ellipsis">&&</',
+      数组: '<div class="stui-vodlist__thumb&&</div>||class="module-item"&&</div>||class="myui-vodlist__box&&</a>||<li class="hl-item&&</li>||<a class="myui-vodlist__thumb&&</a>||class="vodlist_item&&</a>||class="item&&</a>||class="pic&&</a>||<li&&</li>',
+      搜索数组: '<div class="stui-vodlist__thumb&&</div>||class="module-item"&&</div>||class="myui-vodlist__box&&</a>||class="hl-item&&</li>||<li&&</li>',
+      播放数组: '<ul class="stui-content__playlist&&</ul>||<ul class="myui-content__list&&</ul>||id="hl-plays-list"&&</ul>||class="module-play-list-content&&</div>||class="play_box&&</div>||class="content-list&&</ul>||<div class="playlist&&</div>||class="play_list&&</div>',
+      线路数组: 'class="module-play-list-content&&</div>||class="play_box&&</div>||class="playlist&&</div>||class="play_list&&</div>',
+      播放列表: '<a||<li',
+      播放标题: '>&&</a>||>&&<||<span>&&</span>',
       播放链接: 'href="&&"',
+      跳转播放链接: 'var player_*"url":"&&"||player_aaaa_*"url":"&&"',
+      简介: 'class="detail-content" style="*>&&</span>||class="stui-content__detail&&</div>||class="module-info-intro-content&&</div>||class="video-info&&</div>',
+      线路标题: '<h3 class="title">&&</h3>||<span class="title">&&</span>||data-name="&&"',
     },
   },
 ];

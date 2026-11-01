@@ -5,14 +5,13 @@ import {
   Tv,
   Bookmark,
   History,
-  SlidersHorizontal,
   Settings,
   Layers,
   Eye,
-  Check,
 } from 'lucide-react';
 import { SourceSite, UserSettings } from '../../types';
 import { CoreStatusPill } from './CoreStatusPill';
+import { SourcePicker } from '../sources/SourcePicker';
 
 interface NavbarProps {
   sources: SourceSite[];
@@ -84,24 +83,12 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
           </button>
 
-          {/* Source Selector */}
-          <div className="relative">
-            <select
-              value={currentSource}
-              onChange={(e) => onSelectSource(e.target.value)}
-              className="bg-slate-800/90 text-xs md:text-sm font-medium text-slate-200 border border-slate-700/80 rounded-lg px-2.5 py-1.5 pr-7 appearance-none cursor-pointer focus:outline-none focus:ring-1 focus:ring-rose-500 focus:border-rose-500 transition-colors shadow-sm"
-              title="切换站源"
-            >
-              {sources.map((s) => (
-                <option key={s.id} value={s.id} className="bg-slate-900 text-slate-100">
-                  {s.name} {s.isCustom ? '(自定义)' : ''}
-                </option>
-              ))}
-            </select>
-            <div className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400">
-              <SlidersHorizontal className="w-3 h-3" />
-            </div>
-          </div>
+          {/* Source Selector（3 列按钮网格面板） */}
+          <SourcePicker
+            sources={sources}
+            currentSource={currentSource}
+            onSelect={onSelectSource}
+          />
 
           <CoreStatusPill onClick={onOpenCustomSources} />
         </div>

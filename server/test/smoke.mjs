@@ -125,6 +125,22 @@ check('接口 JSON 模板家族', () => {
   assert.equal(rule.field('数组'), 'j:list');
   assert.equal(rule.field('标题'), 'j:vod_name');
 });
+check('通用高频兜底：非特定家族 HTML 简写规则补全 数组/播放数组/搜索数组', () => {
+  // /browse/ 不匹配 mxone/MacCMS/接口JSON/路径式 任一特定家族，只命中「通用高频」
+  const rule = parseRule(
+    JSON.stringify({
+      主页url: 'https://plain-html.example.com',
+      分类url: 'https://plain-html.example.com/browse/{cateId}',
+      分类: '电影$1#剧集$2',
+    })
+  );
+  assert.ok(rule, '规则应解析成功');
+  assert.ok(rule.field('数组'), '通用高频应补 数组 默认截取 pattern（此前此字段为空）');
+  assert.ok(rule.field('播放数组'), '通用高频应补 播放数组');
+  assert.ok(rule.field('搜索数组'), '通用高频应补 搜索数组');
+  assert.ok(rule.field('跳转播放链接'), '通用高频应补 跳转播放链接');
+  assert.equal(rule.fields.get('模板已套用'), '1', '模板标记应已写入');
+});
 check('尾逗号容错 + 全角方括号', () => {
   const rule = parseRule('{"分类url":"https://a.test/list/{cateId}.html","分类":"剧$1",}');
   assert.ok(rule);
