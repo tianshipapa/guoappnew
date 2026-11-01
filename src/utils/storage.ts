@@ -1,4 +1,4 @@
-import { HistoryItem, FavoriteItem, CustomSourceSite, UserSettings } from '../types';
+import { HistoryItem, FavoriteItem, CustomSourceSite, UserSettings, LiveSourceSite } from '../types';
 
 const STORAGE_KEYS = {
   HISTORY: 'duanju_history_v1',
@@ -8,6 +8,8 @@ const STORAGE_KEYS = {
   SOURCES_VISIBILITY: 'duanju_sources_visibility_v1',
   RECENT_SEARCHES: 'duanju_recent_searches_v1',
   LAST_SOURCE: 'duanju_last_source_v1',
+  LIVE_SOURCES: 'duanju_live_sources_v1',
+  LAST_LIVE_SOURCE: 'duanju_last_live_source_v1',
 };
 
 const DEFAULT_SETTINGS: UserSettings = {
@@ -181,5 +183,37 @@ export function loadLastActiveSource(): string {
 export function saveLastActiveSource(source: string): void {
   try {
     localStorage.setItem(STORAGE_KEYS.LAST_SOURCE, source);
+  } catch {}
+}
+
+// ---- 直播源（用户自行添加的 m3u / txt / API 面板）----
+export function loadLiveSources(): LiveSourceSite[] {
+  return getStoredJson<LiveSourceSite[]>(STORAGE_KEYS.LIVE_SOURCES, []);
+}
+
+export function saveLiveSource(source: LiveSourceSite): LiveSourceSite[] {
+  const list = loadLiveSources().filter((item) => item.id !== source.id);
+  const updated = [...list, source];
+  setStoredJson(STORAGE_KEYS.LIVE_SOURCES, updated);
+  return updated;
+}
+
+export function deleteLiveSource(id: string): LiveSourceSite[] {
+  const updated = loadLiveSources().filter((item) => item.id !== id);
+  setStoredJson(STORAGE_KEYS.LIVE_SOURCES, updated);
+  return updated;
+}
+
+export function loadLastLiveSource(): string {
+  try {
+    return localStorage.getItem(STORAGE_KEYS.LAST_LIVE_SOURCE) || 'iptv-org-cn';
+  } catch {
+    return 'iptv-org-cn';
+  }
+}
+
+export function saveLastLiveSource(id: string): void {
+  try {
+    localStorage.setItem(STORAGE_KEYS.LAST_LIVE_SOURCE, id);
   } catch {}
 }

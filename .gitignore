@@ -4,6 +4,7 @@
 build/
 dist/
 coverage/
+node_modules/
 
 native/build/
 android/app/src/main/jniLibs/

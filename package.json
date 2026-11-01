@@ -7,6 +7,8 @@
     "dev": "vite --host 0.0.0.0 --port 3000",
     "build": "tsc && vite build",
     "preview": "vite preview --host 0.0.0.0 --port 3000",
+    "serve": "node server/index.mjs",
+    "test": "node server/test/smoke.mjs",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

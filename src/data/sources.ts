@@ -4,9 +4,10 @@ export const BUILTIN_SOURCES: SourceSite[] = [
   {
     id: 'wangye',
     name: '网页',
-    description: 'XBPQ 网页规则聚合源 (GitHub 订阅)',
+    description: 'XBPQ 网页规则聚合源 (远程订阅)',
     onlineSearch: true,
     pagedSearch: true,
+    native: true,
   },
   {
     id: 'hongguo',
@@ -56,6 +57,7 @@ export const BUILTIN_SOURCES: SourceSite[] = [
     description: '电影 · 连续剧 · 综艺 · 动漫 · 多线路',
     onlineSearch: true,
     pagedSearch: true,
+    native: true,
   },
   {
     id: 'ikanbot',
@@ -63,6 +65,7 @@ export const BUILTIN_SOURCES: SourceSite[] = [
     description: '电影 · 剧集 · 多线路搜索',
     onlineSearch: true,
     pagedSearch: true,
+    native: true,
   },
   {
     id: 'hanxiaoquan',

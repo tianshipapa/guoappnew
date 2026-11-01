@@ -8,8 +8,9 @@ import {
   Layers,
   ArrowRight,
   Loader2,
+  AlertCircle,
 } from 'lucide-react';
-import { Drama, SourceSite } from '../../types';
+import { AggregateSearchSnapshot, Drama, SourceSite } from '../../types';
 import { apiService } from '../../services/api';
 import { LetterKeyboard } from './LetterKeyboard';
 import { DramaCard } from '../explore/DramaCard';
@@ -48,8 +49,24 @@ export const SearchModal: React.FC<SearchModalProps> = ({
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [showKeyboard, setShowKeyboard] = useState(tvKeyboardDefault);
+  /** 跨源聚合进度（单源搜索时为空）。 */
+  const [progress, setProgress] = useState<AggregateSearchSnapshot | null>(null);
 
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const cancelRef = useRef<(() => void) | null>(null);
+
+  // 关闭 / 重开时中断上一个会话，避免旧结果覆盖新结果
+  const stopSearch = () => {
+    cancelRef.current?.();
+    cancelRef.current = null;
+  };
+
+  useEffect(() => {
+    if (!isOpen) {
+      stopSearch();
+      setIsLoading(false);
+    }
+  }, [isOpen]);
 
   // Load recent searches
   useEffect(() => {
@@ -82,18 +99,30 @@ export const SearchModal: React.FC<SearchModalProps> = ({
     const term = searchTerm.trim();
     if (!term) return;
 
+    stopSearch();
     setIsLoading(true);
+    setResults([]);
+    setProgress(null);
     setRecentSearches(addRecentSearch(term));
 
+    if (allSourcesEnabled) {
+      // 跨源聚合：服务端并发抓取，前端按快照增量刷新
+      const sourceIds = apiService.getAvailableSources().map((source) => source.id);
+      const cancel = apiService.startAggregateSearch(sourceIds, term, (snapshot) => {
+        setResults(snapshot.items || []);
+        setProgress(snapshot);
+        if (snapshot.finished) {
+          setIsLoading(false);
+          cancelRef.current = null;
+        }
+      });
+      cancelRef.current = cancel;
+      return;
+    }
+
+    // 单源
     try {
-      let data: Drama[];
-      if (allSourcesEnabled) {
-        // Aggregate across all active sources
-        data = await apiService.searchAllSources(term);
-      } else {
-        // Single source
-        data = await apiService.searchSource(currentSource, term);
-      }
+      const data = await apiService.searchSource(currentSource, term);
       setResults(data);
     } catch (e) {
       console.error('Search error', e);
@@ -195,18 +224,43 @@ export const SearchModal: React.FC<SearchModalProps> = ({
         </div>
 
         {/* Search Mode Status Indicator */}
-        <div className="max-w-5xl mx-auto mt-2 flex items-center justify-between text-xs text-slate-400">
-          <div className="flex items-center gap-1.5">
-            <Sparkles className="w-3.5 h-3.5 text-rose-400" />
-            <span>
+        <div className="max-w-5xl mx-auto mt-2 flex items-center justify-between gap-3 text-xs text-slate-400">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <Sparkles className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+            <span className="truncate">
               {allSourcesEnabled ? '正在使用【全站源并发聚合去重搜索】' : `当前仅搜索【${currentSourceName}】`}
             </span>
           </div>
 
-          <span className="text-[11px] text-slate-500 hidden sm:inline">
-            支持完整剧名或拼音首字母（如：龙王出狱 → LWCY）
-          </span>
+          {progress ? (
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="text-[11px] text-slate-500">
+                已完成 {progress.done}/{progress.total} 源 · 命中 {progress.items.length} 部
+              </span>
+              {progress.pending && progress.pending.length > 0 && (
+                <span className="text-[11px] text-amber-400/80">
+                  抓取中 {progress.pending.length}
+                </span>
+              )}
+              {progress.failures && Object.keys(progress.failures).length > 0 && (
+                <span className="text-[11px] text-rose-400/80">
+                  失败 {Object.keys(progress.failures).length}
+                </span>
+              )}
+            </div>
+          ) : (
+            <span className="text-[11px] text-slate-500 hidden sm:inline shrink-0">
+              支持完整剧名或拼音首字母（如：龙王出狱 → LWCY）
+            </span>
+          )}
         </div>
+
+        {progress?.warning && (
+          <div className="max-w-5xl mx-auto mt-1.5 flex items-start gap-1.5 text-[11px] text-amber-400/90">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-px" />
+            <span className="break-all">{progress.warning}</span>
+          </div>
+        )}
       </div>
 
       {/* Main Content Area */}
@@ -272,21 +326,37 @@ export const SearchModal: React.FC<SearchModalProps> = ({
           </div>
         )}
 
-        {/* Loading state */}
-        {isLoading && (
+        {/* Loading state（还没有任何结果时占位，聚合搜索边出边显） */}
+        {isLoading && results.length === 0 && (
           <div className="py-20 flex flex-col items-center justify-center gap-3 text-slate-400">
             <Loader2 className="w-8 h-8 text-rose-500 animate-spin" />
-            <span className="text-sm">正在全网并发搜索短剧…</span>
+            <span className="text-sm">
+              {progress
+                ? `正在并发抓取站源（${progress.done}/${progress.total}）…`
+                : '正在全网并发搜索短剧…'}
+            </span>
+            {progress?.pending && progress.pending.length > 0 && (
+              <span className="text-[11px] text-slate-500">
+                等待：{progress.pending.slice(0, 4).join('、')}
+                {progress.pending.length > 4 ? ` 等 ${progress.pending.length} 个源` : ''}
+              </span>
+            )}
           </div>
         )}
 
         {/* Results Grid */}
-        {!isLoading && results.length > 0 && (
+        {results.length > 0 && (
           <div>
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-sm font-bold text-slate-200">
                 搜索结果（找到 {results.length} 部匹配剧目）
               </h3>
+              {isLoading && (
+                <span className="text-[11px] text-rose-400 flex items-center gap-1">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  仍在抓取更多源…
+                </span>
+              )}
             </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-4">

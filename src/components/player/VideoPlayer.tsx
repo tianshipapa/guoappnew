@@ -10,13 +10,13 @@ import {
   RotateCcw,
   SkipForward,
   SkipBack,
-  Settings,
   Wifi,
   Sparkles,
   Repeat,
   AlertCircle,
 } from 'lucide-react';
 import { Episode, Drama, UserSettings } from '../../types';
+import { apiService, ResolvedSource } from '../../services/api';
 import { DanmakuOverlay } from './DanmakuOverlay';
 
 interface VideoPlayerProps {
@@ -33,12 +33,6 @@ interface VideoPlayerProps {
 }
 
 const PLAY_RATES = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0];
-const QUALITIES = [
-  { label: '原画 (Auto)', value: 'auto' },
-  { label: '1080P 超清', value: '1080' },
-  { label: '720P 高清', value: '720' },
-  { label: '480P 标清', value: '480' },
-];
 
 export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   drama,
@@ -67,15 +61,14 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [errorMessage, setErrorMessage] = useState('');
   const [noticeMessage, setNoticeMessage] = useState('');
 
+  // 播放线路（服务端解析出的多线路备选）
+  const [resolved, setResolved] = useState<ResolvedSource | null>(null);
+  const [routeIndex, setRouteIndex] = useState(0);
+  const routes = resolved?.variants?.length ? resolved.variants : [];
+
   // Menus
   const [showSpeedMenu, setShowSpeedMenu] = useState(false);
   const [showRouteMenu, setShowRouteMenu] = useState(false);
-  const [showQualityMenu, setShowQualityMenu] = useState(false);
-
-  // Routes
-  const routes = episode.alternativeRoutes || [episode.streamUrl || ''];
-  const [currentRouteIndex, setCurrentRouteIndex] = useState(0);
-  const currentStreamUrl = routes[currentRouteIndex] || episode.streamUrl || '';
 
   const hideControlsTimerRef = useRef<any>(null);
   const lastSavedTimeRef = useRef<number>(0);
@@ -88,6 +81,33 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }, 3500);
   };
 
+  /** 解析当前分集的播放地址（含广告过滤开关）。 */
+  useEffect(() => {
+    let mounted = true;
+    setIsLoading(true);
+    setErrorMessage('');
+    setResolved(null);
+    setRouteIndex(0);
+
+    apiService
+      .resolveStream(drama, episode, { adBlock: settings.adBlock })
+      .then((result) => {
+        if (!mounted) return;
+        setResolved(result);
+      })
+      .catch((error: Error) => {
+        if (!mounted) return;
+        setIsLoading(false);
+        setErrorMessage(error.message || '该分集暂时无法播放');
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [drama.id, drama.source, episode.id, settings.adBlock]);
+
+  const currentPlayUrl = routes[routeIndex]?.playUrl || resolved?.playUrl || '';
+
   // Mount Stream (HLS or standard MP4)
   const mountStream = useCallback(
     (url: string, resumeTime: number = 0) => {
@@ -97,19 +117,15 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       setIsLoading(true);
       setErrorMessage('');
 
-      // Cleanup previous HLS instance
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
       }
 
-      const isHlsUrl = url.includes('.m3u8');
+      const isHlsUrl = url.includes('.m3u8') || url.includes('/api/hls');
 
       if (isHlsUrl && Hls.isSupported()) {
-        const hls = new Hls({
-          enableWorker: true,
-          lowLatencyMode: true,
-        });
+        const hls = new Hls({ enableWorker: true, lowLatencyMode: true });
         hlsRef.current = hls;
 
         hls.loadSource(url);
@@ -132,7 +148,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           }
         });
       } else {
-        // Native video playback
         video.src = url;
         video.load();
         if (resumeTime > 0) {
@@ -155,10 +170,11 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
   // Auto failover route
   const handleRouteFailover = (reason?: string) => {
-    const nextRoute = (currentRouteIndex + 1) % routes.length;
-    if (routes.length > 1 && nextRoute !== currentRouteIndex) {
-      setNoticeMessage(`当前线路加载失败，自动切换至线路 ${nextRoute + 1}/${routes.length}…`);
-      setCurrentRouteIndex(nextRoute);
+    const total = routes.length || 1;
+    const nextRoute = (routeIndex + 1) % total;
+    if (total > 1 && nextRoute !== routeIndex) {
+      setNoticeMessage(`当前线路加载失败，自动切换至线路 ${nextRoute + 1}/${total}…`);
+      setRouteIndex(nextRoute);
       setTimeout(() => setNoticeMessage(''), 4000);
     } else {
       setErrorMessage(reason || '播放失败，请尝试刷新或切换站源');
@@ -167,14 +183,15 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
   // Switch episode or route
   useEffect(() => {
-    mountStream(currentStreamUrl, initialPosition);
+    if (!currentPlayUrl) return;
+    mountStream(currentPlayUrl, initialPosition);
     return () => {
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
       }
     };
-  }, [currentStreamUrl, episode.id, mountStream]);
+  }, [currentPlayUrl, episode.id, mountStream]);
 
   // Video event listeners
   useEffect(() => {
@@ -196,7 +213,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       setCurrentTime(pos);
       setDuration(video.duration || 0);
 
-      // Periodically update progress every 5 seconds
       const now = Date.now();
       if (now - lastSavedTimeRef.current > 5000) {
         lastSavedTimeRef.current = now;
@@ -242,7 +258,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   // Keyboard navigation
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't trigger if typing in an input
       if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return;
 
       if (e.code === 'Space') {
@@ -273,11 +288,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const togglePlay = () => {
     const video = videoRef.current;
     if (!video) return;
-    if (video.paused) {
-      video.play().catch(() => {});
-    } else {
-      video.pause();
-    }
+    if (video.paused) video.play().catch(() => {});
+    else video.pause();
     resetHideTimer();
   };
 
@@ -329,7 +341,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
   };
 
-  // Format time (mm:ss)
   const formatTime = (seconds: number) => {
     const total = Math.max(0, Math.floor(seconds || 0));
     const m = Math.floor(total / 60);
@@ -337,7 +348,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
-  // Sharpen filter CSS style
   const videoFilterStyle =
     settings.pictureQuality.mode === 'sharpen'
       ? {
@@ -354,7 +364,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       onClick={resetHideTimer}
       className="relative w-full aspect-[9/16] sm:aspect-[16/9] max-h-[80vh] bg-black rounded-2xl overflow-hidden shadow-2xl border border-slate-800/80 group select-none flex items-center justify-center"
     >
-      {/* Video Element */}
       <video
         ref={videoRef}
         playsInline
@@ -363,7 +372,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         onClick={togglePlay}
       />
 
-      {/* Danmaku Overlay */}
       <DanmakuOverlay
         currentTime={currentTime}
         enabled={settings.danmakuEnabled}
@@ -373,7 +381,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         dramaTitle={drama.title}
       />
 
-      {/* Buffering Loader */}
       {isLoading && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-[2px] pointer-events-none z-30">
           <div className="flex flex-col items-center gap-2">
@@ -383,7 +390,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         </div>
       )}
 
-      {/* Notice Banner (e.g. Route Failover, Auto-Next) */}
       {noticeMessage && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded-full bg-slate-900/90 border border-rose-500/40 text-xs text-rose-300 shadow-xl flex items-center gap-2 z-30 animate-pulse">
           <Wifi className="w-3.5 h-3.5" />
@@ -391,14 +397,16 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         </div>
       )}
 
-      {/* Error Message */}
       {errorMessage && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 p-4 text-center z-30">
           <AlertCircle className="w-10 h-10 text-rose-500 mb-2" />
           <h4 className="text-sm font-semibold text-slate-200">{errorMessage}</h4>
           <div className="flex items-center gap-2 mt-4">
             <button
-              onClick={() => mountStream(currentStreamUrl, currentTime)}
+              onClick={() => {
+                apiService.clearResolveCache();
+                if (currentPlayUrl) mountStream(currentPlayUrl, currentTime);
+              }}
               className="px-3.5 py-1.5 rounded-lg bg-rose-600 text-white text-xs font-medium hover:bg-rose-500 flex items-center gap-1.5"
             >
               <RotateCcw className="w-3.5 h-3.5" />
@@ -416,14 +424,14 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         </div>
       )}
 
-      {/* Top Bar inside Player (Title, Episode, Route badge) */}
+      {/* Top Bar inside Player */}
       <div
         className={`absolute top-0 left-0 right-0 p-4 bg-gradient-to-b from-black/80 via-black/40 to-transparent flex items-center justify-between z-25 transition-opacity duration-300 ${
           showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
         }`}
       >
-        <div className="flex items-center gap-2">
-          <span className="px-2 py-0.5 rounded bg-rose-600 text-[11px] font-bold text-white shadow-sm">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="px-2 py-0.5 rounded bg-rose-600 text-[11px] font-bold text-white shadow-sm shrink-0">
             {drama.sourceName || drama.source}
           </span>
           <h2 className="text-xs sm:text-sm font-bold text-slate-100 drop-shadow line-clamp-1">
@@ -431,36 +439,39 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           </h2>
         </div>
 
-        {/* Quick Route Info */}
-        <div className="relative">
+        <div className="relative shrink-0">
           <button
             onClick={() => setShowRouteMenu(!showRouteMenu)}
             className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-black/50 hover:bg-black/80 text-[11px] text-slate-300 border border-white/10 backdrop-blur"
           >
             <Wifi className="w-3 h-3 text-emerald-400" />
-            <span>线路 {currentRouteIndex + 1}/{routes.length}</span>
+            <span>
+              线路 {routes.length ? routeIndex + 1 : 1}/{Math.max(routes.length, 1)}
+            </span>
           </button>
 
-          {showRouteMenu && (
-            <div className="absolute right-0 top-full mt-1.5 w-32 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl p-1 z-40">
+          {showRouteMenu && routes.length > 1 && (
+            <div className="absolute right-0 top-full mt-1.5 w-40 max-h-56 overflow-y-auto bg-slate-900 border border-slate-700 rounded-xl shadow-2xl p-1 z-40">
               <div className="px-2 py-1 text-[10px] text-slate-500 uppercase font-semibold">
                 播放线路
               </div>
-              {routes.map((_, i) => (
+              {routes.map((route, i) => (
                 <button
-                  key={i}
+                  key={`${route.rawUrl}_${i}`}
                   onClick={() => {
-                    setCurrentRouteIndex(i);
+                    setRouteIndex(i);
                     setShowRouteMenu(false);
                   }}
                   className={`w-full text-left px-2.5 py-1.5 rounded-md text-xs flex items-center justify-between ${
-                    currentRouteIndex === i
+                    routeIndex === i
                       ? 'bg-rose-500/20 text-rose-400 font-semibold'
                       : 'text-slate-300 hover:bg-slate-800'
                   }`}
                 >
-                  <span>线路 {i + 1}</span>
-                  {currentRouteIndex === i && <span className="text-[10px]">当前</span>}
+                  <span className="truncate">
+                    {route.label || (route.quality ? `${route.quality}P` : `线路 ${i + 1}`)}
+                  </span>
+                  {routeIndex === i && <span className="text-[10px]">当前</span>}
                 </button>
               ))}
             </div>
@@ -468,7 +479,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         </div>
       </div>
 
-      {/* Center Big Play Button (shown when paused) */}
       {!isPlaying && !isLoading && !errorMessage && (
         <button
           onClick={togglePlay}
@@ -484,7 +494,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
         }`}
       >
-        {/* Progress Scrubber */}
         <div className="relative group/bar flex items-center mb-2.5 cursor-pointer">
           <input
             type="range"
@@ -496,15 +505,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           />
         </div>
 
-        {/* Control Buttons */}
         <div className="flex items-center justify-between text-slate-200">
-          {/* Left Buttons: Play, Prev, Next, Volume, Time */}
           <div className="flex items-center gap-2 sm:gap-3">
-            <button
-              onClick={togglePlay}
-              className="p-1.5 hover:text-rose-400 transition-colors"
-              title={isPlaying ? '暂停 (Space)' : '播放 (Space)'}
-            >
+            <button onClick={togglePlay} className="p-1.5 hover:text-rose-400 transition-colors" title={isPlaying ? '暂停 (Space)' : '播放 (Space)'}>
               {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 fill-current" />}
             </button>
 
@@ -526,7 +529,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               <SkipForward className="w-4 h-4" />
             </button>
 
-            {/* Volume */}
             <div className="flex items-center gap-1 group/vol">
               <button onClick={toggleMute} className="p-1 hover:text-rose-400 transition-colors">
                 {isMuted || volume === 0 ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
@@ -542,15 +544,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               />
             </div>
 
-            {/* Time display */}
             <span className="text-[11px] text-slate-400 font-mono ml-1">
               {formatTime(currentTime)} / {formatTime(duration)}
             </span>
           </div>
 
-          {/* Right Buttons: Speed, AutoNext, Quality, Fullscreen */}
           <div className="flex items-center gap-2 relative">
-            {/* Auto Next Toggle */}
             <button
               onClick={() => onUpdateSettings({ ...settings, autoNext: !settings.autoNext })}
               className={`p-1.5 rounded-md text-xs flex items-center gap-1 transition-colors ${
@@ -562,13 +561,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               <span className="text-[10px] hidden sm:inline">连播</span>
             </button>
 
-            {/* Speed Selector */}
             <div className="relative">
               <button
-                onClick={() => {
-                  setShowSpeedMenu(!showSpeedMenu);
-                  setShowQualityMenu(false);
-                }}
+                onClick={() => setShowSpeedMenu(!showSpeedMenu)}
                 className="px-2 py-1 rounded text-xs font-semibold hover:text-rose-400 transition-colors"
               >
                 {settings.playbackRate}x
@@ -579,7 +574,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                   <div className="px-2 py-1 text-[10px] text-slate-500 uppercase font-semibold">
                     播放倍速
                   </div>
-                  {PLAYRATES_LIST.map((rate) => (
+                  {PLAY_RATES.map((rate) => (
                     <button
                       key={rate}
                       onClick={() => setPlaybackRate(rate)}
@@ -596,15 +591,16 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               )}
             </div>
 
-            {/* Sharpen / Enhancement Mode Indicator */}
             <button
-              onClick={() => {
-                const nextMode = settings.pictureQuality.mode === 'sharpen' ? 'original' : 'sharpen';
+              onClick={() =>
                 onUpdateSettings({
                   ...settings,
-                  pictureQuality: { ...settings.pictureQuality, mode: nextMode },
-                });
-              }}
+                  pictureQuality: {
+                    ...settings.pictureQuality,
+                    mode: settings.pictureQuality.mode === 'sharpen' ? 'original' : 'sharpen',
+                  },
+                })
+              }
               className={`p-1.5 rounded-md text-xs flex items-center gap-1 transition-colors ${
                 settings.pictureQuality.mode === 'sharpen'
                   ? 'text-amber-400 bg-amber-500/10'
@@ -618,12 +614,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               </span>
             </button>
 
-            {/* Fullscreen */}
-            <button
-              onClick={toggleFullscreen}
-              className="p-1.5 hover:text-rose-400 transition-colors"
-              title="全屏 (F)"
-            >
+            <button onClick={toggleFullscreen} className="p-1.5 hover:text-rose-400 transition-colors" title="全屏 (F)">
               {isFullscreen ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
             </button>
           </div>
@@ -632,5 +623,3 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     </div>
   );
 };
-
-const PLAYRATES_LIST = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0];

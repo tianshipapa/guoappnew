@@ -105,6 +105,7 @@ export const App: React.FC = () => {
       onlineSearch: true,
       pagedSearch: true,
       isCustom: true,
+      native: true,
     })),
   ];
 
@@ -257,8 +258,16 @@ export const App: React.FC = () => {
 
   // Custom Source Actions
   const handleSaveCustomSource = (source: CustomSourceSite) => {
+    const isNew = !customSources.some((item) => item.id === source.id);
     const updated = saveCustomSource(source);
     setCustomSources(updated);
+    // 新增源后直接切过去，省得用户再翻一遍源列表
+    if (isNew && source.enabled) {
+      setSelectedDrama(null);
+      setActiveView('explore');
+      setCurrentSource(source.id);
+      saveLastActiveSource(source.id);
+    }
   };
 
   const handleDeleteCustomSource = (id: string) => {
