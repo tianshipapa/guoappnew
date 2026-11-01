@@ -1,7 +1,10 @@
 // 收藏夹 / 播放记录：移植 guoappxp native/server/library.go
 //
-// 数据落在 server/data/library.json，换浏览器、换设备访问同一台机器都能看到。
-// 前端仍然在 localStorage 留一份镜像，本机服务不可用时照常可用。
+// 同一份语义，三层落地：
+//   - Node 本地服务：server/data/library.json（server/lib/library-node.mjs）
+//   - Cloudflare Pages Functions：KV 命名空间（functions/_lib/library-kv.mjs）
+//   - 都没配置时：进程内存储，重启即丢（不报错，前端还有 localStorage 镜像）
+// 前端始终在 localStorage 留一份镜像，服务端不可用时照常可用。
 //
 // 接口语义（与 Go 版一致）：
 //   list  favorites | history
@@ -9,23 +12,49 @@
 //   item  单条记录
 //   keys  批量删除的 "source|id" 列表
 
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
 const HISTORY_LIMIT = 300;
 const FAVORITE_LIMIT = 600;
 const MAX_TITLE = 256;
 const MAX_COVER = 2048;
 
-let libraryPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'data', 'library.json');
+/**
+ * 存储层契约：
+ *   read()          -> Promise<string|null>   读取原始 JSON 文本
+ *   write(text)     -> Promise<void>          整体覆盖写入
+ *   describe()      -> string                 调试用的位置描述
+ */
+export function createMemoryLibraryStore() {
+  let text = null;
+  return {
+    async read() {
+      return text;
+    },
+    async write(next) {
+      text = next;
+    },
+    describe() {
+      return 'memory';
+    },
+  };
+}
+
+let store = createMemoryLibraryStore();
 let cache = null;
 let writing = Promise.resolve();
 
-/** 测试 / 部署时改写存储位置。 */
-export function setLibraryPath(path) {
-  libraryPath = path;
+/** 替换存储层（Node 走磁盘，边缘走 KV）。 */
+export function setLibraryStore(next) {
+  store = next || createMemoryLibraryStore();
   cache = null;
+}
+
+/** 存储位置描述（/api/library 调试信息）。 */
+export function libraryBackend() {
+  try {
+    return store.describe?.() || 'unknown';
+  } catch {
+    return 'unknown';
+  }
 }
 
 function clampText(value, limit) {
@@ -81,30 +110,29 @@ function emptyLibrary() {
   return { favorites: [], history: [] };
 }
 
-/** 读库（内存缓存 + 磁盘）。 */
+/** 读库（内存缓存 + 底层存储）。 */
 export async function readLibrary() {
   if (cache) return clone(cache);
   const data = emptyLibrary();
   try {
-    const raw = await readFile(libraryPath, 'utf-8');
-    const parsed = JSON.parse(raw);
-    data.favorites = sanitizeList(parsed?.favorites, FAVORITE_LIMIT);
-    data.history = sanitizeList(parsed?.history, HISTORY_LIMIT);
+    const raw = await store.read();
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      data.favorites = sanitizeList(parsed?.favorites, FAVORITE_LIMIT);
+      data.history = sanitizeList(parsed?.history, HISTORY_LIMIT);
+    }
   } catch {
-    /* 首次运行：文件不存在，按空库处理 */
+    /* 首次运行 / 数据损坏：按空库处理 */
   }
   data.history.sort((left, right) => right.updatedAt - left.updatedAt);
   cache = data;
   return clone(data);
 }
 
-/** 先写临时文件再改名，避免中途退出把收藏夹写坏。 */
+/** 由存储层保证原子性（Node 用 tmp+rename，KV 本身是单键覆盖）。 */
 async function persist(data) {
   cache = clone(data);
-  await mkdir(dirname(libraryPath), { recursive: true });
-  const part = `${libraryPath}.tmp`;
-  await writeFile(part, JSON.stringify(data, null, 2), 'utf-8');
-  await rename(part, libraryPath);
+  await store.write(JSON.stringify(data, null, 2));
 }
 
 function trimList(items, limit) {

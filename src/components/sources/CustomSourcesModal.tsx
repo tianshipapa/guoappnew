@@ -562,16 +562,16 @@ export const CustomSourcesModal: React.FC<CustomSourcesModalProps> = ({
             <div className="flex flex-wrap items-center gap-2 text-amber-300">
               <AlertCircle className="w-3.5 h-3.5 shrink-0" />
               <span>
-                未连接本机抓取服务。部署在 Cloudflare Pages 时，请在自己电脑上运行
-                <code className="mx-1 px-1 rounded bg-slate-800 text-amber-200">npm run serve</code>
-                保持服务在线。
+                未连接抓取服务。云端部署请确认 <code className="mx-1 px-1 rounded bg-slate-800 text-amber-200">functions/</code>
+                已随站点一起发布；本地请运行
+                <code className="mx-1 px-1 rounded bg-slate-800 text-amber-200">npm run serve</code>。
               </span>
               <div className="flex items-center gap-1.5 ml-auto">
                 <input
                   value={coreBaseInput}
                   onChange={(e) => setCoreBaseInput(e.target.value)}
                   className="w-44 bg-slate-800 border border-slate-700 rounded-md px-2 py-1 text-[11px] text-slate-200 font-mono focus:outline-none focus:border-rose-500"
-                  placeholder={DEFAULT_CORE_BASE}
+                  placeholder="留空＝跟随当前站点（同源）"
                 />
                 <button
                   onClick={() => void applyCoreBase()}

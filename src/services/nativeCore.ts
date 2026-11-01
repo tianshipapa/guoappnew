@@ -27,7 +27,10 @@ export class NativeCoreError extends Error {
 }
 
 const BASE_KEY = 'duanju_native_core_base_v1';
-/** 默认本地服务地址（`npm run serve` 的默认端口）。 */
+/**
+ * 备选抓取服务地址：只在用户手动填写时使用。
+ * 默认走「同源」—— 本地 `npm run serve` 和 Cloudflare Pages Functions 都把 /api 挂在页面同域。
+ */
 export const DEFAULT_CORE_BASE = 'http://127.0.0.1:8788';
 
 let healthPromise: Promise<boolean> | null = null;
@@ -62,14 +65,15 @@ function readStoredBase(): string | null {
 
 /**
  * 抓取服务基地址。
- * - 本地页面：默认空字符串 = 同源相对路径（dev 中间件直接可用）
- * - 远程页面：默认 http://127.0.0.1:8788
- * 用户手动设置过的地址优先。
+ * - 默认空字符串 = 同源相对路径：
+ *   · 本地：Vite 中间件 / `npm run serve` 都挂在页面同域
+ *   · 云端：Cloudflare Pages Functions 把 /api/* 挂在同一个域名下
+ * - 用户手动设置过的地址优先（比如想让页面连另一台机器上的服务）
  */
 export function getCoreBase(): string {
   const stored = readStoredBase();
   if (stored !== null) return stored.replace(/\/+$/, '');
-  return isLocalPage() ? '' : DEFAULT_CORE_BASE;
+  return '';
 }
 
 /** 设置抓取服务地址；传空字符串表示「跟随当前站点同源」。 */
@@ -144,7 +148,7 @@ export function isCoreOnline(force = false): Promise<boolean> {
   return healthPromise;
 }
 
-const OFFLINE_HINT = `未连接本地抓取服务（${DEFAULT_CORE_BASE}），请在自己的电脑上运行 npm run serve 后重试`;
+const OFFLINE_HINT = `抓取服务无响应（${coreURL('/api/health')}）。本地请运行 npm run serve；云端请确认 Pages Functions 已随 dist 一起部署`;
 
 async function post<T = any>(path: string, body: unknown): Promise<T> {
   const url = coreURL(path);
@@ -193,7 +197,7 @@ async function post<T = any>(path: string, body: unknown): Promise<T> {
     }
     throw new NativeCoreError(
       response.status === 404 || response.status === 405
-        ? `抓取服务未就绪（HTTP ${response.status}）。部署在 Cloudflare Pages 时请在本机运行 npm run serve，页面会自动连接 ${DEFAULT_CORE_BASE}`
+        ? `抓取服务未就绪（HTTP ${response.status}）：云端部署需要 functions/ 目录一起发布（Pages Functions），本地则需要 npm run serve`
         : `服务返回 ${response.status}${detail ? `：${detail}` : ''}`
     );
   }

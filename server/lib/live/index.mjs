@@ -94,12 +94,61 @@ async function fetchSourceText(address, headers = {}, referer = '') {
   return text;
 }
 
-/** 分类列表。greenMode 为 true 时，成人面板源只放行公开电视类分类（与 App 端一致，默认关闭）。 */
-export async function livePlatforms(sources, sourceId, { greenMode = false } = {}) {
+// 端口限制是「Cloudflare 专属」，不是通用 edge 行为：
+// Cloudflare Workers 出站只允许标准端口（80/443/8080/8443），秀果这类 :81 面板源云端拿不到；
+// Vercel Functions 跑在 AWS Lambda 上，出站除 25 端口外不限制，:81 可直接访问。
+// 因此用独立开关区分，避免 Vercel 被误伤（Cloudflare 与 Vercel 都设 runtime=edge，不能靠 runtime 判断）。
+const ALLOWED_PORTS = new Set(['', '80', '443', '8080', '8443']);
+let portRestricted = false;
+
+/** 仅 Cloudflare 入口调用，标记当前运行环境对出站端口受限。Vercel 不调用，保持 false。 */
+export function setLivePortRestricted(value) {
+  portRestricted = Boolean(value);
+}
+export function isLivePortRestricted() {
+  return portRestricted;
+}
+
+function blockedByPort(address) {
+  try {
+    const port = new URL(String(address || '')).port;
+    return Boolean(port) && !ALLOWED_PORTS.has(port);
+  } catch {
+    return false;
+  }
+}
+
+/** 该直播源里因端口限制（Cloudflare）不可用的端点。 */
+export function edgeBlockedEndpoints(source) {
+  return (source?.endpoints || []).filter(blockedByPort);
+}
+
+/**
+ * 分类列表。greenMode 为 true 时，成人面板源只放行公开电视类分类（与 App 端一致，默认关闭）。
+ * portRestricted 为 true 时（仅 Cloudflare）跳过访问不了的非标准端口端点；
+ * Vercel 不限制端口，portRestricted 默认 false，秀果直播 :81 云端可用。
+ */
+export async function livePlatforms(
+  sources,
+  sourceId,
+  { greenMode = false, portRestricted = isLivePortRestricted() } = {}
+) {
   const source = sourceOf(sources, sourceId);
   if (source.protocol === 'pingtai') {
+    let endpoints = source.endpoints || [];
+    if (portRestricted) {
+      const blocked = endpoints.filter(blockedByPort);
+      endpoints = endpoints.filter((item) => !blockedByPort(item));
+      if (!endpoints.length) {
+        const ports = [...new Set(blocked.map((item) => new URL(item).port))].join('/');
+        throw new Error(
+          `「${source.name}」的面板接口在端口 ${ports}，Cloudflare Workers 只能访问 80/443/8080/8443，` +
+            `云端无法连接。这一项请在本地服务（npm run serve）下观看。`
+        );
+      }
+    }
     return cached(`platforms:${source.id}:${greenMode ? 'green' : 'full'}`, () =>
-      pingtaiPlatforms(source, greenMode)
+      pingtaiPlatforms({ ...source, endpoints }, greenMode)
     );
   }
   return [{ id: 'all', name: source.group || '全部频道', count: 0 }];

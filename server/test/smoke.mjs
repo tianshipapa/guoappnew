@@ -248,7 +248,7 @@ console.log('收藏夹共享库');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
   const { rm } = await import('node:fs/promises');
-  const { setLibraryPath, applyLibrary, readLibrary, entryKey } = await import('../lib/library.mjs');
+  const { setLibraryPath, applyLibrary, readLibrary, entryKey } = await import('../lib/library-node.mjs');
 
   const libPath = join(tmpdir(), `guoappnew-library-${Date.now()}.json`);
   setLibraryPath(libPath);
@@ -380,6 +380,240 @@ console.log('封面处理');
     assert.equal(needsCoverProxy('https://snzypic.vip/upload/vod/a.jpg'), false);
     assert.equal(needsCoverProxy('/relative/path.jpg'), false);
     assert.equal(needsCoverProxy(''), false);
+  });
+}
+
+// ---------------------------------------------------------------- 边缘适配层
+// Cloudflare Pages Functions 里没有 req / res，全靠 functions/_lib/bridge.mjs 翻译；
+// 这里用 Node 22 内置的 Request / Response / TransformStream 直接验适配契约。
+console.log('边缘适配层（Web Request ↔ req/res）');
+{
+  const { createBridge } = await import('../../functions/_lib/bridge.mjs');
+  const { handleRequest } = await import('../router.mjs');
+
+  const call = async (path, init) => {
+    const request = new Request(`http://edge.local${path}`, init);
+    const url = new URL(request.url);
+    const { req, res, response } = createBridge(request);
+    handleRequest(req, res, url).catch((error) => {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: false, error: error.message }));
+    });
+    return response();
+  };
+
+  await checkAsync('GET /api/health 经适配层返回 JSON', async () => {
+    const res = await call('/api/health');
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.service, 'guoappnew-native-core');
+  });
+
+  await checkAsync('POST 的 JSON body 能被路由读到', async () => {
+    const res = await call('/api/library', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ list: 'nope' }),
+    });
+    const body = await res.json();
+    assert.equal(body.ok, false);
+    assert.match(body.error, /list/);
+  });
+
+  await checkAsync('多次 write 按顺序拼成完整响应体', async () => {
+    const { res, response } = createBridge(new Request('http://edge.local/x'));
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.write('a');
+    res.write('b');
+    res.end('c');
+    const out = await response();
+    assert.equal(out.status, 200);
+    assert.equal(await out.text(), 'abc');
+  });
+
+  await checkAsync('304 响应不带 body', async () => {
+    const { res, response } = createBridge(new Request('http://edge.local/x'));
+    res.writeHead(304, { ETag: '"abc"' });
+    res.end();
+    const out = await response();
+    assert.equal(out.status, 304);
+    assert.equal(out.body, null);
+    assert.equal(out.headers.get('etag'), '"abc"');
+  });
+}
+
+// ---------------------------------------------------------------- 边缘端口限制（仅 Cloudflare）
+// 端口限制必须是「Cloudflare 专属」开关，不能靠 runtime==='edge' 判断——
+// Vercel 也设 runtime='edge'，但 Vercel 出站不限制端口，秀果 :81 在 Vercel 上应当可用。
+// 这里验 setLivePortRestricted 独立于 runtime，且默认关闭（不误伤 Vercel）。
+console.log('边缘端口限制（仅 Cloudflare，不误伤 Vercel）');
+{
+  const { BUILTIN_LIVE_SOURCES, edgeBlockedEndpoints, isLivePortRestricted, setLivePortRestricted } =
+    await import('../lib/live/index.mjs');
+  const xiuguo = BUILTIN_LIVE_SOURCES.find((source) => source.id === 'xiuguo');
+
+  check('秀果面板端点在 :81，被端口限制逻辑识别', () => {
+    const blocked = edgeBlockedEndpoints(xiuguo);
+    assert.equal(blocked.length, xiuguo.endpoints.length, '两个 :81 端点都应被识别为受限');
+  });
+
+  check('端口限制默认关闭（Vercel 不误伤）', () => {
+    setLivePortRestricted(false);
+    assert.equal(isLivePortRestricted(), false);
+  });
+
+  check('端口限制可单独开启（Cloudflare 入口调用）且可复位', () => {
+    setLivePortRestricted(true);
+    assert.equal(isLivePortRestricted(), true);
+    setLivePortRestricted(false); // 复位，避免影响后续 Vercel 小节
+    assert.equal(isLivePortRestricted(), false);
+  });
+}
+
+// ---------------------------------------------------------------- Vercel 兼容层
+// Vercel 的 Node.js 运行时原生就是 Node 的 req/res（http.IncomingMessage /
+// http.ServerResponse），api/[...path].js 直接把 req/res 喂给 handleRequest，
+// 没有 Cloudflare 那种 Web Request ↔ Node 的翻译桥。这里用 mock 的 Node req/res
+// 直接驱动该入口，验「免桥接」契约与 POST body 兜底（adaptReq 把 req.body 归一为 Buffer）。
+console.log('Vercel 兼容层（Node req/res 免桥接）');
+{
+  const { pathToFileURL } = await import('node:url');
+  const { fileURLToPath } = await import('node:url');
+  const { dirname, join } = await import('node:path');
+
+  // 文件名含 [...]，Node 的 import() 会把 [ 当成 IPv6 分隔符，先把方括号 percent-encode。
+  const here = dirname(fileURLToPath(import.meta.url));
+  const vercelPath = join(here, '..', '..', 'api', '[...path].js');
+  const vercelURL = pathToFileURL(vercelPath).href.replace(/\[/g, '%5B').replace(/\]/g, '%5D');
+  const { default: vercelHandler } = await import(vercelURL);
+
+  // 复位收藏夹后端为内存（前面的「收藏夹共享库」小节把库后端改成了临时磁盘文件，
+  // 会污染全局状态；Vercel 入口本就不注入 store，默认就是 memory）。
+  const { setLibraryStore } = await import('../lib/library.mjs');
+  setLibraryStore();
+
+  // 最小 Node-like req：host / x-forwarded-proto 拼完整 URL，body 直接摆在 req.body
+  // （Vercel 在某些配置下会提前解析请求体），必要时带一个空的异步迭代器避免裸迭代报错。
+  const makeReq = ({ method = 'GET', path = '/api/health', headers = {}, body } = {}) => {
+    const req = {
+      method,
+      url: path,
+      headers: { host: 'guoappnew.vercel.app', 'x-forwarded-proto': 'https', ...headers },
+    };
+    if (body !== undefined) req.body = body;
+    req[Symbol.asyncIterator] = async function* () {};
+    return req;
+  };
+
+  // 最小 Node-like res：收集 status / headers / body，end() 时 resolve。
+  const makeRes = () => {
+    let status = 200;
+    const headers = {};
+    const chunks = [];
+    let resolveEnd;
+    const finished = new Promise((resolve) => (resolveEnd = resolve));
+    const res = {
+      headersSent: false,
+      setHeader(key, value) {
+        headers[key.toLowerCase()] = value;
+      },
+      writeHead(s, h) {
+        status = s;
+        if (h) for (const k of Object.keys(h)) headers[k.toLowerCase()] = h[k];
+        this.headersSent = true;
+      },
+      write(chunk) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+        this.headersSent = true;
+        return true;
+      },
+      end(chunk) {
+        if (chunk != null) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+        this.headersSent = true;
+        resolveEnd();
+        return true;
+      },
+      once() {
+        return res;
+      },
+      on() {
+        return res;
+      },
+    };
+    return {
+      res,
+      finished,
+      snapshot: () => ({
+        status,
+        headers,
+        body: Buffer.concat(chunks).toString('utf-8'),
+      }),
+    };
+  };
+
+  const call = async ({ method, path, headers, body } = {}) => {
+    const req = makeReq({ method, path, headers, body });
+    const { res, finished, snapshot } = makeRes();
+    await vercelHandler(req, res);
+    await finished;
+    return snapshot();
+  };
+
+  await checkAsync('GET /api/health 经 Vercel 入口返回 edge 运行时 + memory 库', async () => {
+    const out = await call({ method: 'GET', path: '/api/health' });
+    assert.equal(out.status, 200);
+    const body = JSON.parse(out.body);
+    assert.equal(body.ok, true);
+    assert.equal(body.service, 'guoappnew-native-core');
+    assert.equal(body.runtime, 'edge', 'Vercel 入口应 setRuntime("edge")');
+    assert.equal(body.library, 'memory', 'Vercel 无磁盘/KV，库后端应为 memory');
+  });
+
+  await checkAsync('OPTIONS 预检返回 204 且带 CORS 头', async () => {
+    const out = await call({ method: 'OPTIONS', path: '/api/health' });
+    assert.equal(out.status, 204);
+    assert.equal(out.headers['access-control-allow-origin'], '*');
+    assert.equal(out.body, '', '204 不应带 body');
+  });
+
+  await checkAsync('POST 的 JSON body（字符串）能被路由读到', async () => {
+    const out = await call({
+      method: 'POST',
+      path: '/api/library',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ list: 'nope' }),
+    });
+    const body = JSON.parse(out.body);
+    assert.equal(body.ok, false);
+    assert.match(body.error, /list/, '应到达 applyLibrary 并识别出非法 list 字段');
+  });
+
+  await checkAsync('POST 的 JSON body（Buffer）也能被路由读到', async () => {
+    const out = await call({
+      method: 'POST',
+      path: '/api/library',
+      headers: { 'Content-Type': 'application/json' },
+      body: Buffer.from(JSON.stringify({ list: 'nope' })),
+    });
+    const body = JSON.parse(out.body);
+    assert.equal(body.ok, false);
+    assert.match(body.error, /list/);
+  });
+
+  await checkAsync('GET /api/library 返回内存库快照', async () => {
+    const out = await call({ method: 'GET', path: '/api/library' });
+    const body = JSON.parse(out.body);
+    assert.equal(body.ok, true);
+    assert.equal(body.backend, 'memory');
+    assert.ok(Array.isArray(body.data.favorites));
+  });
+
+  await checkAsync('未知 /api 路径返回 404', async () => {
+    const out = await call({ method: 'GET', path: '/api/whatever' });
+    assert.equal(out.status, 404);
+    const body = JSON.parse(out.body);
+    assert.equal(body.ok, false);
   });
 }
 

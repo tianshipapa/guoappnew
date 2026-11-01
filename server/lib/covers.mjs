@@ -10,9 +10,6 @@
 // 只有在字节头不是已知图片格式时才尝试，正常图片直接透传。
 
 import { createCipheriv, createDecipheriv, createHash } from 'node:crypto';
-import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { fetchBinary } from './http.mjs';
 
@@ -26,13 +23,71 @@ const AES_KEY = Buffer.from('f5d965df75336270', 'utf-8');
 const AES_IV = Buffer.from('97b60394abc2fbe1', 'utf-8');
 const XOR_KEY = Buffer.from('2019ysapp7527', 'utf-8');
 
-let cacheDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'data', 'covers');
-/** 测试 / 部署时改写缓存目录。 */
-export function setCoverCacheDir(dir) {
-  cacheDir = dir;
-  index.clear();
-  total = 0;
-  scanned = false;
+/**
+ * 缓存存储层。
+ *
+ * 默认是进程内 LRU —— Node 与边缘运行时都能跑，但进程/隔离实例一换就丢。
+ * Node 入口会通过 `setCoverStore()` 换成磁盘实现（server/lib/covers-node.mjs），
+ * 边缘运行时则靠 Cloudflare 的 Cache API 做跨实例缓存，这里只当一级内存缓存。
+ *
+ * store 契约：
+ *   get(key)             -> { data:Buffer, type:string, at:number } | null
+ *   set(key, data, type) -> void
+ *   stats()              -> { entries, bytes, directory }
+ */
+export function createMemoryCoverStore({ maxBytes = CACHE_MAX_BYTES, maxEntries = 2000, ttl = TTL } = {}) {
+  const entries = new Map();
+  let bytes = 0;
+
+  function drop(key) {
+    const entry = entries.get(key);
+    if (!entry) return;
+    entries.delete(key);
+    bytes -= entry.data.length;
+  }
+
+  function prune() {
+    if (bytes <= maxBytes && entries.size <= maxEntries) return;
+    const sorted = [...entries.entries()].sort((a, b) => a[1].usedAt - b[1].usedAt);
+    const overflowEntries = entries.size - maxEntries;
+    let overflowBytes = bytes - maxBytes;
+    let removed = 0;
+    for (const [key, entry] of sorted) {
+      if (removed >= overflowEntries && overflowBytes <= 0) break;
+      drop(key);
+      overflowBytes -= entry.data.length;
+      removed += 1;
+    }
+  }
+
+  return {
+    async get(key) {
+      const entry = entries.get(key);
+      if (!entry) return null;
+      if (Date.now() - entry.at > ttl) {
+        drop(key);
+        return null;
+      }
+      entry.usedAt = Date.now();
+      return { data: entry.data, type: entry.type, at: entry.at };
+    },
+    async set(key, data, type) {
+      drop(key);
+      entries.set(key, { data, type, at: Date.now(), usedAt: Date.now() });
+      bytes += data.length;
+      prune();
+    },
+    stats() {
+      return { entries: entries.size, bytes, directory: 'memory' };
+    },
+  };
+}
+
+let store = createMemoryCoverStore();
+
+/** 替换存储层（Node 走磁盘，测试可注入假实现）。 */
+export function setCoverStore(next) {
+  store = next || createMemoryCoverStore();
 }
 
 // 下载并发闸门：guoappxp 用 `slots: make(chan struct{}, 4)`，
@@ -56,11 +111,6 @@ function releaseSlot() {
   else active -= 1;
 }
 
-/** key -> { size, type, at, usedAt } */
-const index = new Map();
-let total = 0;
-let scanned = false;
-let writing = Promise.resolve();
 /** 同一张图并发请求时只下载一次 */
 const pending = new Map();
 
@@ -155,79 +205,22 @@ function cacheKey(address, source) {
   return createHash('sha256').update(`${source}\u0000${address}`).digest('hex');
 }
 
-async function ensureScanned() {
-  if (scanned) return;
-  scanned = true;
-  try {
-    const files = await readdir(cacheDir);
-    for (const name of files) {
-      if (!name.endsWith('.img')) continue;
-      const key = name.slice(0, -4);
-      if (key.length !== 64) continue;
-      const info = await stat(join(cacheDir, name));
-      if (!info.isFile() || info.size <= 0) continue;
-      index.set(key, { size: info.size, type: '', at: info.mtimeMs, usedAt: info.mtimeMs });
-      total += info.size;
-    }
-  } catch {
-    /* 目录还不存在 */
-  }
-  void prune();
-}
-
-function prune() {
-  if (total <= CACHE_MAX_BYTES && index.size <= CACHE_MAX_ENTRIES) return;
-  const entries = [...index.entries()].sort((a, b) => a[1].usedAt - b[1].usedAt);
-  const overflowEntries = index.size - CACHE_MAX_ENTRIES;
-  let overflowBytes = total - CACHE_MAX_BYTES;
-  let removed = 0;
-  for (const [key, entry] of entries) {
-    if (removed >= overflowEntries && overflowBytes <= 0) break;
-    index.delete(key);
-    total -= entry.size;
-    overflowBytes -= entry.size;
-    removed += 1;
-    void unlink(join(cacheDir, `${key}.img`)).catch(() => {});
-  }
-}
-
 async function readCached(key) {
-  await ensureScanned();
-  const entry = index.get(key);
-  if (!entry) return null;
-  if (Date.now() - entry.at > TTL) {
-    index.delete(key);
-    total -= entry.size;
-    void unlink(join(cacheDir, `${key}.img`)).catch(() => {});
-    return null;
-  }
   try {
-    const data = await readFile(join(cacheDir, `${key}.img`));
-    entry.usedAt = Date.now();
-    return { data, type: entry.type || imageMime(data) };
+    const hit = await store.get(key);
+    if (!hit) return null;
+    return { data: hit.data, type: hit.type || imageMime(hit.data) };
   } catch {
-    index.delete(key);
-    total -= entry.size;
     return null;
   }
 }
 
 async function writeCache(key, data, type) {
-  await mkdir(cacheDir, { recursive: true });
-  const target = join(cacheDir, `${key}.img`);
-  const part = `${target}.tmp`;
-  // 串行化写入，避免并发 rename 互相踩踏
-  const job = writing.then(async () => {
-    await writeFile(part, data);
-    await rename(part, target);
-  });
-  writing = job.catch(() => {});
-  await job;
-  const previous = index.get(key);
-  if (previous) total -= previous.size;
-  index.set(key, { size: data.length, type, at: Date.now(), usedAt: Date.now() });
-  total += data.length;
-  void prune();
+  try {
+    await store.set(key, data, type);
+  } catch {
+    /* 缓存写失败不影响本次返回 */
+  }
 }
 
 /**
@@ -283,7 +276,7 @@ export async function resolveCover(address, options = {}) {
 
 /** 缓存统计（调试用）。 */
 export function coverCacheStats() {
-  return { entries: index.size, bytes: total, directory: cacheDir };
+  return store.stats();
 }
 
 /** 预热：把某个站源列表里的豆瓣封面批量抓下来，避免首屏空图。 */

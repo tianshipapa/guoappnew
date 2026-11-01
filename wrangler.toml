@@ -1,0 +1,25 @@
+# Cloudflare Pages 配置
+#
+# 部署方式（二选一）：
+#   A. 控制台连 GitHub：Build command = `npm run build`，Output directory = `dist`
+#   B. 命令行：npx wrangler pages deploy dist
+#
+# 关键：functions/ 目录会被自动识别成 Pages Functions，/api/* 全部交给它；
+# 静态资源由 CDN 直出（public/_routes.json 里已经限定只让 /api/* 进函数）。
+
+name = "guoappnew"
+pages_build_output_dir = "dist"
+
+# nodejs_compat 提供 Buffer / node:crypto（封面 SHA1、AES 解码都要用）
+compatibility_date = "2025-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+# 收藏夹 KV（可选）：不绑也能直接部署——
+#   不绑时收藏夹走「前端 localStorage 镜像」+ 云端进程内存储（实例重启即丢，同设备续播不受影响）。
+#   需要跨设备 / 清缓存后还能同步时再创建并填回这里的 id：
+#     npx wrangler kv namespace create LIBRARY_KV
+#   然后把返回的 id 填到下面，并在 Pages 项目 Settings → Functions → KV bindings 里也绑一次
+#   （命令行部署以本文件为准）。
+# [[kv_namespaces]]
+# binding = "LIBRARY_KV"
+# id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"

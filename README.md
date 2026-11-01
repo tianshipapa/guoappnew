@@ -1,6 +1,6 @@
 # 短剧视界 (HongGuoJian / ZhenGuoJian) - React Web Edition
 
-跨平台多端独立短剧与影视聚合播放器，由原 Flutter 架构 + Go 原生核心完整重构为 React + TypeScript + Vite + Tailwind CSS 应用，核心抓取能力（XBPQ 规则引擎、直播、去广告、A123、爱看机器人、自定义源、跨源聚合搜索）已 1:1 移植到本地 Node 抓取服务。
+跨平台多端独立短剧与影视聚合播放器，由原 Flutter 架构 + Go 原生核心完整重构为 React + TypeScript + Vite + Tailwind CSS 应用，核心抓取能力（XBPQ 规则引擎、直播、去广告、A123、爱看机器人、自定义源、跨源聚合搜索）已 1:1 移植为运行时无关的 JS 抓取层（本地 Node 服务与 Cloudflare Pages Functions 共用同一份代码）。
 
 ## ✨ 核心特性与业务逻辑
 
@@ -75,44 +75,123 @@
 - **框架**：React 18 + TypeScript + Vite 6
 - **样式**：Tailwind CSS + Lucide React
 - **播放引擎**：Hls.js（m3u8）+ mpegts.js（FLV 直播）+ HTML5 Media API
-- **抓取核心**：零依赖 Node 服务（`server/`，Node 22+ 原生 `fetch`）
-- **数据持久化**：服务端 `server/data/library.json`（收藏夹 / 播放记录，跨端共享）+ LocalStorage 本地镜像
+- **抓取核心**：零依赖 JS 服务（`server/`，Node 22+ 原生 `fetch`），路由层与运行时解耦，**Node 与 Cloudflare Workers 共用同一份**
+- **数据持久化**：收藏夹 / 播放记录三层落地 —— 本地 `server/data/library.json`、云端 Cloudflare KV、Lite 模式 LocalStorage 镜像
+- **托管**：Cloudflare Pages 或 Vercel（均为静态资源 + 同源 Serverless Function 提供 `/api/*`，共用同一份 `server/router.mjs`）
 
 ## 🚀 开发与运行
 
 ```bash
 npm install
-npm run dev      # 前端 + 抓取服务（Vite 中间件同源挂载，推荐）
-npm run serve    # 仅抓取服务，独立跑在 8788 端口（生产静态托管时用）
-npm run build    # tsc + vite build
-npm test         # 规则引擎 + 收藏夹 + 封面处理冒烟测试（44 项，不联网）
+npm run dev            # 前端 + 抓取服务（Vite 中间件同源挂载，推荐）
+npm run serve          # 仅抓取服务，独立跑在 8788 端口
+npm run preview:pages  # 在 workerd 里跑 Pages Functions（8789，验证云端行为）
+npm run build          # tsc + vite build
+npm run deploy:pages   # 构建并发布到 Cloudflare Pages
+npm run deploy:vercel  # 构建并发布到 Vercel（npx vercel deploy --prod）
+npm test               # 规则引擎 + 收藏夹 + 封面 + 边缘适配层 + Vercel 兼容层 + 端口限制冒烟测试（57 项，不联网）
 ```
 
-> **为什么必须有本地抓取服务**：站点抓取、GBK 转码、m3u8 去广告、清单改写、跨源并发都受浏览器同源策略与防盗链限制，只能在服务端完成。`npm run dev` 时它以 Vite 插件中间件形式挂载在同一端口，前端只发同源 `/api/*`，开箱即用。
+> **为什么必须有服务端抓取层**：站点抓取、GBK 转码、m3u8 去广告、清单改写、跨源并发都受浏览器同源策略与防盗链限制，只能在服务端完成。`npm run dev` 时它以 Vite 插件中间件形式挂载在同一端口；云端则由 Pages Functions 承担，前端始终只发同源 `/api/*`。
 
-### 部署到 Cloudflare Pages（跨源 + 本地抓取）
+### 部署到 Cloudflare Pages（推荐：同源 Functions，不依赖本机）
 
-静态托管上**没有后端**：Cloudflare Pages 对静态资源的非 GET 请求会直接回 `405`，所以前端不能再把数据接口当同源接口用。本项目已内置这条链路：
+抓取层已实现为 **Pages Functions**，`/api/*` 与页面同域 —— 手机直接打开就能用，不需要电脑开机，也没有跨域与 Private Network Access 问题。
 
-- 页面在**远程域名**（如 `https://xxx.pages.dev`）上运行时，前端自动把全部 `/api/*` 请求指向 **`http://127.0.0.1:8788`**（用户本机抓取服务）；在 `localhost` 下则仍走同源，无需配置。
-- 抓取服务对 `/api/*` 全量返回 CORS 头，并对预检请求回 `204`：`Access-Control-Allow-Origin: *`、`Access-Control-Allow-Private-Network: true`（Chrome 的 Public → Private 网络访问要求）、`Access-Control-Max-Age` 一天。
-- 万一中间层仍把 POST 拦成 `405/404/501`，客户端会**自动降级为 `GET ?payload=<base64url JSON>`**，服务端两种形态都接受。
-- m3u8 清单改写后输出的是**绝对地址** `http://127.0.0.1:8788/api/media?…`，因此跨源播放、分片、密钥全都回到本机代理，不会去请求 Pages 域名而拿到 405。
+目录分工：
 
-使用步骤：
+```
+functions/api/[[path]].js   # 边缘入口：/api/* 全部交给 router
+functions/_lib/bridge.mjs   # Web Request ↔ 类 Node req/res 适配（含流式响应）
+functions/_lib/library-kv.mjs
+server/router.mjs           # 运行时无关的抓取路由（与本地服务同一份代码）
+server/index.mjs            # Node 外壳：静态托管 + 磁盘存储
+```
+
+部署步骤：
 
 ```bash
-# 1) 在自己电脑上常驻抓取服务（页面在哪个域名都行）
-npm run serve          # 默认 http://127.0.0.1:8788
+# 0)（可选）想让收藏夹跨设备同步，先建 KV 并把 id 填回 wrangler.toml：
+npx wrangler kv namespace create LIBRARY_KV
 
-# 2) Cloudflare Pages 构建配置
-#    Build command:  npm run build
-#    Output dir:     dist
+# 1) 发布（也可以在控制台连接仓库：Build = npm run build，Output = dist）
+npm run deploy:pages
 ```
 
-打开 Pages 站点后，右上角若出现「本机服务未连接」，点它即可跳到自定义源面板填写实际地址（默认 `http://127.0.0.1:8788`），地址保存在浏览器本地。
+> 不绑 KV 也能直接部署：收藏夹走前端 `localStorage` 镜像 + 云端进程内存储，同设备续播不受影响；只是清缓存 / 换设备后不会自动同步。
+
+本地先验证边缘行为（跑的是 workerd，不是 Node）：
+
+```bash
+npm run preview:pages     # http://127.0.0.1:8789
+```
+
+两种运行时的能力对照：
+
+| 能力 | 云端（Pages Functions） | 云端（Vercel） | 本地（npm run serve） |
+|---|---|---|---|
+| 点播四个源 / XBPQ 规则源 / 搜索 | ✅ | ✅ | ✅ |
+| 封面代理（豆瓣防盗链） | ✅ 边缘 Cache API | ✅ 进程内缓存（无边缘 Cache API） | ✅ 磁盘缓存 |
+| 收藏夹与续播 | ✅ 前端镜像（可选 KV 跨设备） | ✅ 前端镜像（进程内，无 KV） | ✅ `server/data/library.json` |
+| iptv-org 直播 | ✅ | ✅ | ✅ |
+| 秀果直播（面板接口在 `:81`） | ❌ 端口不允许（Workers 出站限制） | ✅ 端口可用 | ✅ |
+| 需要电脑开机 | ❌ | ❌ | ✅ |
+
+云端已知约束（都是运行时硬限制，代码里已做显式提示）：
+
+- **非标准端口**：Workers 出站只放行 80/443/8080/8443，秀果的 `:81` 面板源会直接返回「请在本地服务下观看」。
+- **CPU 与子请求配额**：免费版 10ms CPU / 50 子请求。抓取页正则解析本身是纯 IO 等待，一般够用；若遇到 `1102` 或结果被截断，升级 Workers Paid（$5/月，30s CPU / 1000 子请求）。
+- **实例会被回收**：聚合搜索在这里改成「一次请求跑完再返回」（`runtime=edge`），不再依赖进程内会话轮询。
+- **出口 IP 是 Cloudflare**：个别采集站可能对 CF 网段限流，这类源可在设置里改回本地地址。
+
+默认跟随同源，一般无需配置。仍想连本机或另一台机器上的抓取服务（例如把秀果直播换成本地 8788）时：右上角状态灯点开 →「站源管理 → 抓取服务地址」，留空表示跟随当前站点，填 `http://127.0.0.1:8788` 即覆盖同源默认值，地址保存在浏览器本地。
 
 > 浏览器要求：Chrome / Edge 允许 HTTPS 页面访问 `http://127.0.0.1`；若被全局代理或安全软件拦截，可把 `127.0.0.1` 加入直连白名单。抓取服务本身会无视 `HTTP_PROXY`，避免本地代理未开启时全军覆没。
+
+### 部署到 Vercel（同源 Node Functions，免翻译桥）
+
+抓取层对 Vercel 同样是「同源 Function」：`api/[...path].js` 把 `/api/*` 直接交给
+`server/router.mjs`。与 Cloudflare 的不同点只在「外壳」——Vercel 的 Node 运行时原生就是 Node 的
+`req`/`res`，`router.mjs` 的「类 Node 契约」直接满足，**不需要**像 Cloudflare 那样写一层
+Web Request ↔ Node 的翻译桥（`functions/_lib/bridge.mjs`）。
+
+目录分工：
+
+```
+api/[...path].js          # Vercel Node 入口：/api/* 全部交给 router
+vercel.json               # 构建命令 + SPA 回退 + 函数运行时/超时
+server/router.mjs         # 运行时无关的抓取路由（与本地、Cloudflare 同一份代码）
+server/index.mjs          # Node 外壳：静态托管 + 磁盘存储（本地用）
+```
+
+部署步骤：
+
+```bash
+# 1) 安装 Vercel CLI（首次）；也可不装，用控制台导入仓库
+npm i -g vercel          # 或 npx vercel
+
+# 2) 发布（控制台导入时：Build Command = npm run build，Output Directory = dist，无需额外配置）
+npm run deploy:vercel    # 等价 npx vercel deploy --prod
+```
+
+> 不需要绑定任何存储：收藏夹走前端 `localStorage` 镜像 + 云端进程内存储（与未绑 KV 的
+> Cloudflare 行为一致），同设备续播不受影响；封面临时缓存走进程内内存，冷启动回源一次。
+> 若想要跨设备同步收藏夹，可按 `functions/_lib/library-kv.mjs` 的同款模式接 `@vercel/kv`
+> （需自行安装并配置 REST API 环境变量），这里不默认开启以免拖慢构建。
+
+本地先验证（跑 Vercel 构建产物 + `vercel dev`，可选）：
+
+```bash
+npx vercel dev           # http://localhost:3000
+```
+
+云端约束与 Cloudflare **不完全相同**——Vercel 跑在 AWS Lambda 上，出站除 25 端口外不限制，
+所以**秀果直播 `:81` 在 Vercel 上可用**（这点与 Cloudflare 相反）。其余约束：
+
+- **非标准端口**：Vercel **不限制**出站端口，秀果 `:81` 面板源云端可用；Cloudflare 才受 80/443/8080/8443 限制。代码里用 `setLivePortRestricted(true)` 单独标记 Cloudflare，Vercel 不调用，因此不会被误伤（二者都设 `runtime=edge`，不能用 runtime 判断端口）。
+- **函数超时**：免费版默认 10s、最高可设 60s（`vercel.json` 已设 60）；长直播流 / 大分片转发临界时，Pro 计划可把 `maxDuration` 调更高。
+- **实例会被回收**：聚合搜索同样改成「一次请求跑完再返回」（`runtime=edge`）。
+- **出口 IP 是 Vercel**：个别采集站可能对云厂商网段限流，这类源可在设置里改回本地地址。
 
 ### 接口一览
 
@@ -170,7 +249,7 @@ GET /api/cover?u=<封面原地址>&s=<站源>&r=<自定义Referer>&force=1
 
 - **Referer 策略**：豆瓣域名（`*.doubanio.com` / `*.douban.com`）→ `https://movie.douban.com/`；其它不设 Referer（乱设反而会被部分 CDN 拒绝）。`r` 参数可显式覆盖。
 - **兜底解码**：对齐 guoappxp `nativeCoreDecodeCover` —— 字节头不是已知图片格式时，先试 AES-128-CBC（key `f5d965df75336270` / iv `97b60394abc2fbe1`，兼容 `Salted__` 前缀），再试 XOR（`2019ysapp7527` 前 100 字节）。
-- **缓存**：`server/data/covers/<sha256>.img`，TTL 30 天、上限 256MB / 2000 条、按 LRU 淘汰；响应带 `ETag` 与 `Cache-Control: public, max-age=2592000, immutable`，命中 `If-None-Match` 直接 304。
+- **缓存**：本地写 `server/data/covers/<sha256>.img`（TTL 30 天、上限 256MB / 2000 条、LRU 淘汰）；云端用边缘 **Cache API**，同一张海报在全球节点只回源一次。响应带 `ETag` 与 `Cache-Control: public, max-age=2592000, immutable`，命中 `If-None-Match` 直接 304。
 - **并发**：下载限制 4 路（对齐 Go 版 `slots` 容量 4），同一张图并发请求会合并成一次下载。
 - **失败兜底**：抓不到时回 1×1 透明 PNG 并带 `X-Cover-Error` 头，页面不会出现破图图标。
 
