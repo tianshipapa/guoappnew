@@ -1,0 +1,6 @@
+{
+  "name": "短剧视界 (HongGuoJian / ZhenGuoJian)",
+  "description": "多端短剧与影视聚合播放器，支持多源浏览、分类筛选、拼音首字母与全源聚合搜索、多线路播放切换、画质调节与收藏历史记录。",
+  "permissions": [],
+  "capabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,126 @@
+import { LiveGroup } from '../types';
+
+export const LIVE_CHANNEL_GROUPS: LiveGroup[] = [
+  {
+    name: '短剧与轮播剧场',
+    channels: [
+      {
+        key: 'live_dj_1',
+        name: '24H 逆袭战神热播剧场',
+        number: '001',
+        group: '短剧与轮播剧场',
+        urls: [
+          'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
+          'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+        ],
+        subtitle: '全天候精选逆袭打脸爽剧连播',
+        epgCurrent: '正在播出：龙王出狱 连播中',
+      },
+      {
+        key: 'live_dj_2',
+        name: '24H 甜宠虐恋千金剧场',
+        number: '002',
+        group: '短剧与轮播剧场',
+        urls: [
+          'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
+          'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
+        ],
+        subtitle: '霸总甜宠先婚后爱爽剧专区',
+        epgCurrent: '正在播出：重生成首富的隐婚娇妻',
+      },
+      {
+        key: 'live_dj_3',
+        name: '经典动作短剧专线',
+        number: '003',
+        group: '短剧与轮播剧场',
+        urls: [
+          'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
+        ],
+        subtitle: '高燃动作悬疑短剧',
+        epgCurrent: '正在播出：天医神婿 巅峰决战',
+      },
+    ],
+  },
+  {
+    name: '央视频道',
+    channels: [
+      {
+        key: 'cctv_1',
+        name: 'CCTV-1 综合频道',
+        number: '101',
+        group: '央视频道',
+        urls: ['https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8'],
+        subtitle: '中央广播电视总台综合频道',
+        epgCurrent: '今日说法 / 新闻联播',
+      },
+      {
+        key: 'cctv_6',
+        name: 'CCTV-6 电影频道',
+        number: '106',
+        group: '央视频道',
+        urls: ['https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8'],
+        subtitle: '国家级专业电影频道',
+        epgCurrent: '佳片有约：华语精彩影院',
+      },
+      {
+        key: 'cctv_8',
+        name: 'CCTV-8 电视剧频道',
+        number: '108',
+        group: '央视频道',
+        urls: ['https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8'],
+        subtitle: '黄金强档优秀电视剧展播',
+        epgCurrent: '黄金强档剧场',
+      },
+      {
+        key: 'cctv_13',
+        name: 'CCTV-13 新闻频道',
+        number: '113',
+        group: '央视频道',
+        urls: ['https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8'],
+        subtitle: '全球要闻24小时滚动',
+        epgCurrent: '共同关注 / 东方时空',
+      },
+    ],
+  },
+  {
+    name: '卫视频道',
+    channels: [
+      {
+        key: 'ws_hn',
+        name: '湖南卫视 HD',
+        number: '201',
+        group: '卫视频道',
+        urls: ['https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8'],
+        subtitle: '快乐中国 综艺大剧',
+        epgCurrent: '金鹰独播剧场',
+      },
+      {
+        key: 'ws_zj',
+        name: '浙江卫视 HD',
+        number: '202',
+        group: '卫视频道',
+        urls: ['https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8'],
+        subtitle: '美好中国 品牌强档',
+        epgCurrent: '中国蓝剧场',
+      },
+      {
+        key: 'ws_js',
+        name: '江苏卫视 HD',
+        number: '203',
+        group: '卫视频道',
+        urls: ['https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8'],
+        subtitle: '荔枝剧场 精彩纷呈',
+        epgCurrent: '幸福剧场',
+      },
+      {
+        key: 'ws_df',
+        name: '东方卫视 HD',
+        number: '204',
+        group: '卫视频道',
+        urls: ['https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8'],
+        subtitle: '东方卫视 汇聚精彩',
+        epgCurrent: '东方剧场',
+      },
+    ],
+  },
+];
