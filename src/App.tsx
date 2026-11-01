@@ -45,7 +45,7 @@ import {
   loadLastActiveSource,
   saveLastActiveSource,
 } from './utils/storage';
-import { Loader2, Sparkles, RefreshCw, Layers } from 'lucide-react';
+import { Loader2, Sparkles, RefreshCw, Layers, AlertCircle } from 'lucide-react';
 
 export const App: React.FC = () => {
   // Persistence state
@@ -77,6 +77,7 @@ export const App: React.FC = () => {
   const [currentSort, setCurrentSort] = useState<string>('default');
   const [currentStatus, setCurrentStatus] = useState<string>('all');
   const [catalog, setCatalog] = useState<Drama[]>([]);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
   const [isLoadingCatalog, setIsLoadingCatalog] = useState(false);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
@@ -147,6 +148,7 @@ export const App: React.FC = () => {
   const loadCatalog = useCallback(
     async (resetPage: boolean = false) => {
       setIsLoadingCatalog(true);
+      setCatalogError(null);
       const targetPage = resetPage ? 1 : page;
 
       try {
@@ -167,8 +169,13 @@ export const App: React.FC = () => {
         }
         setHasMore(res.hasMore);
         setTotalCount(res.total);
+        // 抓取失败（含服务离线 / 站点 403 / 超时）时如实记录原因，界面据此提示
+        if (res.error && res.items.length === 0) {
+          setCatalogError(res.error);
+        }
       } catch (e) {
         console.error('Failed to load catalog', e);
+        setCatalogError((e as Error).message || '加载失败');
       } finally {
         setIsLoadingCatalog(false);
       }
@@ -486,11 +493,26 @@ export const App: React.FC = () => {
                   <span className="text-sm font-medium">正在加载站源剧集…</span>
                 </div>
               ) : catalog.length === 0 ? (
-                <div className="py-24 text-center text-slate-400">
-                  <Layers className="w-12 h-12 text-slate-600 mx-auto mb-3" />
-                  <p className="text-base font-semibold text-slate-300">该分类暂无剧目</p>
-                  <p className="text-xs text-slate-500 mt-1">请尝试切换分类或站源查看更多内容</p>
-                </div>
+                catalogError ? (
+                  <div className="py-24 text-center text-slate-400">
+                    <AlertCircle className="w-12 h-12 text-amber-500/70 mx-auto mb-3" />
+                    <p className="text-base font-semibold text-slate-300">「{activeSourceObj.name}」加载失败</p>
+                    <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto break-all">{catalogError}</p>
+                    <button
+                      onClick={() => loadCatalog(true)}
+                      className="mt-4 px-4 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium transition-colors"
+                    >
+                      重试
+                    </button>
+                    <p className="text-[11px] text-slate-600 mt-3">请检查站源是否在线、抓取服务是否已部署，或切换其它站源</p>
+                  </div>
+                ) : (
+                  <div className="py-24 text-center text-slate-400">
+                    <Layers className="w-12 h-12 text-slate-600 mx-auto mb-3" />
+                    <p className="text-base font-semibold text-slate-300">该分类暂无剧目</p>
+                    <p className="text-xs text-slate-500 mt-1">请尝试切换分类或站源查看更多内容</p>
+                  </div>
+                )
               ) : (
                 <>
                   <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2.5 sm:gap-3.5 md:gap-4">

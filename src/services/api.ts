@@ -143,8 +143,13 @@ export const apiService = {
     return all.filter((s) => visibility[s.id] !== false);
   },
 
-  /** 目录（分类 / 翻页）。原生站源失败时回落到示例数据，保证界面不空白。 */
-  async fetchCatalog(params: CatalogParams): Promise<{ items: Drama[]; hasMore: boolean; total: number }> {
+  /** 目录（分类 / 翻页）。原生站源失败时返回空 + 真实原因，不再用示例数据充数。 */
+  async fetchCatalog(params: CatalogParams): Promise<{
+    items: Drama[];
+    hasMore: boolean;
+    total: number;
+    error?: string;
+  }> {
     const { sourceId, category = '', page = 1, pageSize = 15, sortBy = 'default', releaseStatus = 'all' } = params;
 
     if (isNativeSource(sourceId)) {
@@ -161,27 +166,15 @@ export const apiService = {
           total: Number(response.total) || items.length,
         };
       } catch (error) {
-        console.warn(`[catalog] ${sourceId} 抓取失败：`, (error as Error).message);
+        const message = (error as Error).message;
+        console.warn(`[catalog] ${sourceId} 抓取失败：`, message);
+        // 失败就如实返回空 + 真实原因，界面据此提示「该源加载失败」，不再拿示例数据充数
+        return { items: [], hasMore: false, total: 0, error: message };
       }
     }
 
-    // 兜底：示例数据（本机服务不可达时保证界面不空白）
-    let pool = SAMPLE_DRAMAS;
-    if (category && category !== 'recommend') {
-      pool = pool.filter((d) => d.category === category || d.tags.some((t) => t.includes(category)));
-    }
-    if (releaseStatus && releaseStatus !== 'all') {
-      pool = pool.filter((d) => d.releaseStatus === releaseStatus);
-    }
-    if (sortBy === 'heat') pool = [...pool].sort((a, b) => parseFloat(b.heat || '0') - parseFloat(a.heat || '0'));
-    else if (sortBy === 'episodes') pool = [...pool].sort((a, b) => b.episodes - a.episodes);
-
-    const start = (page - 1) * pageSize;
-    return {
-      items: pool.slice(start, start + pageSize).map((d) => ({ ...d, source: sourceId, sourceName: sourceNameOf(sourceId) })),
-      hasMore: start + pageSize < pool.length,
-      total: pool.length,
-    };
+    // 非原生源（内置无服务端实现的）：没有可抓取的数据源，返回空
+    return { items: [], hasMore: false, total: 0, error: `站源「${sourceNameOf(sourceId)}」暂无在线数据` };
   },
 
   /** 分类列表（XBPQ 规则的 分类 字段 / A123 内置分类 / MacCMS 接口 class）。 */
@@ -212,7 +205,7 @@ export const apiService = {
     ];
   },
 
-  /** 单源搜索。 */
+  /** 单源搜索。原生站源失败时返回空（不再用示例数据充数）。 */
   async searchSource(sourceId: string, query: string): Promise<Drama[]> {
     const q = query.trim();
     if (!q) return [];
@@ -227,6 +220,7 @@ export const apiService = {
         return (response.items || []).map((item: any) => toDrama(item, sourceId));
       } catch (error) {
         console.warn(`[search] ${sourceId} 失败：`, (error as Error).message);
+        return [];
       }
     }
 

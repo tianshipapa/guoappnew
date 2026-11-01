@@ -83,21 +83,75 @@ function rowsOf(payload) {
   return [];
 }
 
-/** 极简 XML 解析：MacCMS 的 XML 接口层级很浅，取 <video> 字段即可。 */
+/**
+ * 解析 MacCMS 采集 XML 的 <dl> 分集块。
+ *
+ * 部分采集接口（如西瓜/厂长/最大资源的 at/xml）不直接给 vod_play_url，
+ * 而是把分集放在嵌套块里：
+ *
+ *   <dl>
+ *     <dd flag="xigua">第1集$url#第2集$url</dd>
+ *     <dd flag="xiguam3u8">第1集$m3u8url#第2集$m3u8url</dd>
+ *   </dl>
+ *
+ * 每个 <dd> 是一条线路（flag 即线路名，内容形如「第1集$地址#第2集$地址」），
+ * 归一成与 JSON 接口同形的 vod_play_from（线路名 $$$ 拼接）与 vod_play_url
+ * （各线路分集 $$$ 拼接），供 parsePlayGroups 复用。
+ */
+function parseXMLDDBlock(dlText) {
+  const dds = [...String(dlText || '').matchAll(/<dd(?:\s+flag="([^"]*)")?>([\s\S]*?)<\/dd>/gi)];
+  if (!dds.length) return null;
+  const froms = [];
+  const groups = [];
+  for (const match of dds) {
+    const flag = (match[1] || '').trim();
+    const content = match[2].trim();
+    if (!content) continue;
+    if (flag) froms.push(flag);
+    groups.push(content);
+  }
+  if (!groups.length) return null;
+  return {
+    playURL: groups.join('$$$'),
+    playFrom: froms.length ? froms.join('$$$') : '',
+  };
+}
+
+/** 极简 XML 解析：MacCMS 的 XML 接口层级很浅，取 <video> 与 <class> 字段即可。 */
 function parseXMLList(text) {
-  const videos = [...text.matchAll(/<video>([\s\S]*?)<\/video>/gi)];
-  if (!videos.length) return null;
-  const list = videos.map((entry) => {
+  const parseFields = (block) => {
     const fields = {};
-    for (const match of entry[1].matchAll(/<(\w+)>([\s\S]*?)<\/\1>/g)) {
+    for (const match of block.matchAll(/<(\w+)>([\s\S]*?)<\/\1>/g)) {
       fields[match[1]] = match[2]
         .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
         .trim();
     }
     return fields;
+  };
+  const videos = [...text.matchAll(/<video>([\s\S]*?)<\/video>/gi)];
+  const classes = [...text.matchAll(/<class>([\s\S]*?)<\/class>/gi)];
+  if (!videos.length && !classes.length) return null;
+  const list = videos.map((entry) => {
+    const fields = parseFields(entry[1]);
+    // 嵌套 <dl><dd> 分集块（部分采集接口不给扁平 vod_play_url）：
+    // 还原成 vod_play_url / vod_play_from，扁平字段已存在时不覆盖。
+    const dd = parseXMLDDBlock(fields['dl']);
+    if (dd) {
+      if (!fields.vod_play_url) fields.vod_play_url = dd.playURL;
+      if (!fields.vod_play_from) fields.vod_play_from = dd.playFrom;
+      delete fields['dl'];
+    }
+    return fields;
   });
   const pageCount = /<pagecount>(\d+)<\/pagecount>/i.exec(text);
-  return { list, pagecount: pageCount ? Number.parseInt(pageCount[1], 10) : 1, xml: true };
+  return {
+    list,
+    pagecount: pageCount ? Number.parseInt(pageCount[1], 10) : 1,
+    xml: true,
+    // XML 接口把分类放在 <multilingualarea><class> 块里（与 JSON 的 class 同形），
+    // 归一成 { type_id, type_name } 供 maccmsCategories 复用。
+    class: classes.map((entry) => parseFields(entry[1])),
+  };
 }
 
 function remarkToCount(remark) {
@@ -208,6 +262,28 @@ export function parsePlayGroups(playURL, playFrom) {
   return groups;
 }
 
+/**
+ * 挑出最可能能直接播放的线路（对齐 guoappxp maccmsAPIBestRouteIndex）：
+ * 优先含 .m3u8 的线路，其次 .mp4，都没有则取分集最多的（并列取靠前）。
+ * 关键：很多采集源第一条线路是播放页 HTML（/play/…），直接放不了；
+ * 而 m3u8 直链线路常排在后面，必须按"是否含直链"重新选线。
+ */
+export function pickBestRouteIndex(groups) {
+  if (!groups?.length) return -1;
+  const contains = (index, marker) =>
+    groups[index].episodes.some((ep) => String(ep.url || '').toLowerCase().includes(marker));
+  for (const marker of ['.m3u8', '.mp4']) {
+    for (let index = 0; index < groups.length; index++) {
+      if (contains(index, marker)) return index;
+    }
+  }
+  let best = 0;
+  for (let index = 1; index < groups.length; index++) {
+    if (groups[index].episodes.length > groups[best].episodes.length) best = index;
+  }
+  return best;
+}
+
 export async function maccmsDetail({ base, source, sourceId }) {
   const payload = await getJSON(base, { ac: 'detail', ids: sourceId });
   const rows = rowsOf(payload).map(normalizeRow).filter((row) => row.id);
@@ -217,8 +293,10 @@ export async function maccmsDetail({ base, source, sourceId }) {
   const groups = parsePlayGroups(row.playURL, row.playFrom);
   if (!groups.length) throw new Error('接口未返回可播放分集');
 
+  // 选最可能直接播放的线路（含 m3u8/mp4 优先），而非固定第一条。
+  const bestIndex = pickBestRouteIndex(groups);
+  const main = groups[bestIndex];
   const episodes = [];
-  const main = groups[0];
   main.episodes.forEach((entry, index) => {
     episodes.push({
       index: index + 1,
@@ -226,7 +304,10 @@ export async function maccmsDetail({ base, source, sourceId }) {
       pageUrl: '',
       videoUrl: normalizePlaybackURL(entry.url),
       referer: base + '/',
-      routes: groups.slice(1).map((group) => group.episodes[index]?.url).filter(Boolean),
+      routes: groups
+        .filter((_, groupIndex) => groupIndex !== bestIndex)
+        .map((group) => group.episodes[index]?.url)
+        .filter(Boolean),
     });
   });
 
@@ -249,4 +330,4 @@ export async function maccmsResolve({ chapter, name = '线路' }) {
   return { ...variants[0], variants };
 }
 
-export { maccmsPlayerURL };
+export { maccmsPlayerURL, parseXMLList };

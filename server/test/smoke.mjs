@@ -18,6 +18,7 @@ import {
 } from '../lib/xbpq/token.mjs';
 import { parseImport } from '../index.mjs';
 import { parseLive } from '../lib/live/parse.mjs';
+import { parseXMLList, parsePlayGroups, pickBestRouteIndex } from '../lib/providers/maccms-api.mjs';
 
 let passed = 0;
 const check = (name, fn) => {
@@ -140,6 +141,59 @@ check('通用高频兜底：非特定家族 HTML 简写规则补全 数组/播�
   assert.ok(rule.field('搜索数组'), '通用高频应补 搜索数组');
   assert.ok(rule.field('跳转播放链接'), '通用高频应补 跳转播放链接');
   assert.equal(rule.fields.get('模板已套用'), '1', '模板标记应已写入');
+});
+check('MacCMS XML 接口解析 <class> 分类块（采集源分类）', () => {
+  // 采集预设 54 个源全是 .../provide/vod/at/xml，分类放在 <multilingualarea><class> 里，
+  // 之前 parseXMLList 只解析 <video>，导致 maccmsCategories 拿不到 XML 源分类。
+  const xml =
+    '<multidata><stringlist total="10"><pagecount>1</pagecount></stringlist>' +
+    '<list><video><type_id>1</type_id><name>电影A</name></video></list>' +
+    '<multilingualarea>' +
+    '<class><type_id>1</type_id><type_name>电影</type_name><type_pid>0</type_pid></class>' +
+    '<class><type_id>2</type_id><type_name>连续剧</type_name><type_pid>0</type_pid></class>' +
+    '<class><type_id>3</type_id><type_name>综艺</type_name><type_pid>0</type_pid></class>' +
+    '</multilingualarea></multidata>';
+  const parsed = parseXMLList(xml);
+  assert.ok(parsed, 'XML 应解析成功');
+  assert.equal(parsed.list.length, 1, 'video 条目数');
+  assert.equal(parsed.class.length, 3, 'class 分类块应被解析');
+  assert.deepEqual(
+    parsed.class.map((c) => ({ id: c.type_id, name: c.type_name })),
+    [
+      { id: '1', name: '电影' },
+      { id: '2', name: '连续剧' },
+      { id: '3', name: '综艺' },
+    ]
+  );
+});
+check('MacCMS XML <dl><dd> 嵌套分集块解析（采集源播放页修复）', () => {
+  // 西瓜/厂长/最大等 at/xml 源的分集藏在 <dl><dd flag="...">第1集$url#...</dd></dl>，
+  // 旧 parseXMLList 只解析 <video> 扁平字段，vod_play_url 恒为空 → 详情报"未返回可播放分集"。
+  const xml =
+    '<list><video><id>89196</id><name><![CDATA[够了，爸爸！]]></name>' +
+    '<dl><dd flag="xigua"><![CDATA[第01集$https://a.test/play/1#第02集$https://a.test/play/2]]></dd>' +
+    '<dd flag="xiguam3u8"><![CDATA[第01集$https://a.test/1/index.m3u8#第02集$https://a.test/2/index.m3u8]]></dd></dl>' +
+    '</video></list>';
+  const parsed = parseXMLList(xml);
+  assert.ok(parsed, 'XML 应解析成功');
+  const row = parsed.list[0];
+  assert.equal(row.vod_play_from, 'xigua$$$xiguam3u8', '线路名应按 flag 还原为 $$$ 拼接');
+  assert.ok(row.vod_play_url.includes('https://a.test/1/index.m3u8'), '分集应还原进 vod_play_url');
+  assert.ok(row.vod_play_url.includes('$$$'), '多线路应以 $$$ 分隔');
+});
+check('最优线路选择：优先挑含 m3u8/mp4 的直链线路', () => {
+  // 很多采集源第一条线路是播放页 HTML（/play/…），必须选到 m3u8 直链线路才能播。
+  const groups = parsePlayGroups(
+    '第1集$https://a.test/play/1$$$第1集$https://a.test/1/index.m3u8',
+    'xigua$$$xiguam3u8'
+  );
+  assert.equal(groups.length, 2, '应解析出 2 条线路');
+  const best = pickBestRouteIndex(groups);
+  assert.equal(best, 1, '应选中含 m3u8 的线路（下标 1）而非播放页（下标 0）');
+  assert.ok(/\.m3u8/.test(groups[best].episodes[0].url), '选中线路首集应是 m3u8 直链');
+  // 无直链时回退到分集最多的线路
+  const onlyHtml = parsePlayGroups('第1集$https://a.test/p/1#第2集$https://a.test/p/2', 'x');
+  assert.equal(pickBestRouteIndex(onlyHtml), 0, '纯播放页线路应返回 0');
 });
 check('尾逗号容错 + 全角方括号', () => {
   const rule = parseRule('{"分类url":"https://a.test/list/{cateId}.html","分类":"剧$1",}');

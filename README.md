@@ -44,6 +44,7 @@
 
 7. **自定义源及管理**（对齐 guoappxp 的自定义源页）：
    - 四种类型：自动探测 / 网页采集 / MacCMS 接口(JSON) / MacCMS 接口(XML)，并可单独开启 XBPQ 规则模式。
+   - **采集源播放页**：XML 接口（`.../at/xml`）的分集若藏在嵌套 `<dl><dd flag="…">` 块里（西瓜/厂长/最大等源常见），已能还原为 `vod_play_url` 取到分集；多线路时自动优先挑含 `.m3u8`/`.mp4` 的直链线路（播放页 HTML 降为备选），避免拿到放不了的播放页。
    - **新增 / 编辑 / 启停 / 删除**：点任意条目即可编辑，规则 JSON 失焦时自动嗅出 `name` 与 `主页url`。
    - **在线测试与校验**：返回模板家族识别结果、分类数、真实连通耗时与解析条数。
    - **导入三通道**：本地 `.json` / `.txt` 文件、订阅地址（含两个默认加速地址、自动 `blob` → `raw`）、直接粘贴 TVBox `sites` JSON。
@@ -90,7 +91,7 @@ npm run preview:pages  # 在 workerd 里跑 Pages Functions（8789，验证云�
 npm run build          # tsc + vite build
 npm run deploy:pages   # 构建并发布到 Cloudflare Pages
 npm run deploy:vercel  # 构建并发布到 Vercel（npx vercel deploy --prod）
-npm test               # 规则引擎 + 收藏夹 + 封面 + 边缘适配层 + Vercel 兼容层 + 端口限制 + XBPQ 令牌续期冒烟测试（64 项，不联网）
+npm test               # 规则引擎 + 收藏夹 + 封面 + 边缘适配层 + Vercel 兼容层 + 端口限制 + XBPQ 令牌续期 + MacCMS XML 分类/播放冒烟测试（68 项，不联网）
 ```
 
 > **为什么必须有服务端抓取层**：站点抓取、GBK 转码、m3u8 去广告、清单改写、跨源并发都受浏览器同源策略与防盗链限制，只能在服务端完成。**关键点：这套服务端抓取层在云端（Cloudflare Pages Functions 或 Vercel Functions）是原生运行的，部署后普通用户完全不需要本机服务**——`npm run dev` / `npm run serve` 只是本地开发调试用。前端始终只发同源 `/api/*`，云端由函数承担。

@@ -30,6 +30,33 @@ if (process.env.GUOAPP_USE_ENV_PROXY !== '1') {
   process.env.no_proxy = '*';
 }
 
+// ---------------------------------------------------------------- 强制直连
+// 上面的删环境代理只对「Node 之后才读的变量」有效；undici 的全局 fetch 在进程
+// 启动时就可能已锁定环境代理（用户机器上的科学上网代理一关，所有抓取报
+// "upstream connect failed ... os error 10061"，整站瘫痪）。
+// 解法：Node 侧用一个「不带 proxy 的 undici Agent」作为 fetch 的 dispatcher，
+// 强制直连、彻底忽略 HTTP_PROXY/HTTPS_PROXY/NODE_USE_ENV_PROXY。
+// 边缘运行时（Cloudflare/Vercel）没有 undici，直接走平台 fetch（本就无此问题）。
+let directDispatcher;
+let directDispatcherResolved = false;
+
+async function getDirectDispatcher() {
+  if (directDispatcherResolved) return directDispatcher;
+  directDispatcherResolved = true;
+  try {
+    const undici = await import('undici');
+    // 不设 proxy 参数 = 纯直连；默认 Agent 不读任何环境代理变量。
+    directDispatcher = new undici.Agent();
+  } catch {
+    directDispatcher = null;
+  }
+  return directDispatcher;
+}
+
+function withDispatcher(options, dispatcher) {
+  return dispatcher ? { ...options, dispatcher } : options;
+}
+
 const MAX_TEXT_BYTES = 12 << 20; // 单页 12MB 上限，防止异常站点打爆内存
 const DEFAULT_TIMEOUT = 20000;
 
@@ -99,13 +126,18 @@ export async function fetchText(address, options = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
   try {
-    const response = await fetch(address, {
-      method,
-      headers: requestHeaders,
-      body: method === 'GET' || method === 'HEAD' ? undefined : body,
-      redirect,
-      signal: controller.signal,
-    });
+    const dispatcher = await getDirectDispatcher();
+    const fetchOptions = withDispatcher(
+      {
+        method,
+        headers: requestHeaders,
+        body: method === 'GET' || method === 'HEAD' ? undefined : body,
+        redirect,
+        signal: controller.signal,
+      },
+      dispatcher
+    );
+    const response = await fetch(address, fetchOptions);
     const buffer = Buffer.from(await response.arrayBuffer());
     if (buffer.length > MAX_TEXT_BYTES) {
       throw new Error(`页面过大（${(buffer.length / 1048576).toFixed(1)}MB）`);
@@ -136,11 +168,8 @@ export async function fetchBinary(address, options = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
   try {
-    const response = await fetch(address, {
-      method,
-      headers: requestHeaders,
-      signal: controller.signal,
-    });
+    const dispatcher = await getDirectDispatcher();
+    const response = await fetch(address, withDispatcher({ method, headers: requestHeaders, signal: controller.signal }, dispatcher));
     return {
       status: response.status,
       headers: response.headers,
