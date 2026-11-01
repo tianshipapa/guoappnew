@@ -473,7 +473,7 @@ console.log('边缘端口限制（仅 Cloudflare，不误伤 Vercel）');
 
 // ---------------------------------------------------------------- Vercel 兼容层
 // Vercel 的 Node.js 运行时原生就是 Node 的 req/res（http.IncomingMessage /
-// http.ServerResponse），api/[...path].mjs 直接把 req/res 喂给 handleRequest，
+// http.ServerResponse），api/index.mjs 直接把 req/res 喂给 handleRequest，
 // 没有 Cloudflare 那种 Web Request ↔ Node 的翻译桥。这里用 mock 的 Node req/res
 // 直接驱动该入口，验「免桥接」契约与 POST body 兜底（adaptReq 把 req.body 归一为 Buffer）。
 console.log('Vercel 兼容层（Node req/res 免桥接）');
@@ -484,7 +484,7 @@ console.log('Vercel 兼容层（Node req/res 免桥接）');
 
   // 文件名含 [...]，Node 的 import() 会把 [ 当成 IPv6 分隔符，先把方括号 percent-encode。
   const here = dirname(fileURLToPath(import.meta.url));
-  const vercelPath = join(here, '..', '..', 'api', '[...path].mjs');
+  const vercelPath = join(here, '..', '..', 'api', 'index.mjs');
   const vercelURL = pathToFileURL(vercelPath).href.replace(/\[/g, '%5B').replace(/\]/g, '%5D');
   const { default: vercelHandler } = await import(vercelURL);
 
@@ -568,6 +568,24 @@ console.log('Vercel 兼容层（Node req/res 免桥接）');
     assert.equal(body.service, 'guoappnew-native-core');
     assert.equal(body.runtime, 'edge', 'Vercel 入口应 setRuntime("edge")');
     assert.equal(body.library, 'memory', 'Vercel 无磁盘/KV，库后端应为 memory');
+  });
+
+  // 模拟 vercel.json 的 rewrite：/api/<x> 被转发到 /api/index?upstreamPath=<x>。
+  // 这同时验证「单级 + 多级路径都能正确还原」——正是 catch-all 文件名在 Vercel 上会 404 的坑。
+  await checkAsync('rewrite 形态 /api/index?upstreamPath=health 等价 /api/health', async () => {
+    const out = await call({ method: 'GET', path: '/api/index?upstreamPath=health' });
+    assert.equal(out.status, 200);
+    const body = JSON.parse(out.body);
+    assert.equal(body.ok, true);
+    assert.equal(body.service, 'guoappnew-native-core');
+  });
+
+  await checkAsync('rewrite 形态多级路径 /api/index?upstreamPath=live/sources 能到达路由', async () => {
+    const out = await call({ method: 'GET', path: '/api/index?upstreamPath=live/sources' });
+    assert.equal(out.status, 200);
+    const body = JSON.parse(out.body);
+    assert.equal(body.ok, true);
+    assert.ok(Array.isArray(body.sources), 'live/sources 应返回 sources 数组（多级路径未被 Vercel 层拦截）');
   });
 
   await checkAsync('OPTIONS 预检返回 204 且带 CORS 头', async () => {

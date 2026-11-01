@@ -212,7 +212,7 @@ async function post<T = any>(path: string, body: unknown): Promise<T> {
     }
     throw new NativeCoreError(
       response.status === 404 || response.status === 405
-        ? `抓取服务未就绪（HTTP ${response.status}）：云端部署需要 functions/ 目录一起发布（Pages Functions），本地则需要 npm run serve`
+        ? `抓取服务未就绪（HTTP ${response.status}）：云端部署需要 Functions（api/ 或 functions/ 目录）随前端一起发布，本地则需要 npm run serve`
         : `服务返回 ${response.status}${detail ? `：${detail}` : ''}`
     );
   }

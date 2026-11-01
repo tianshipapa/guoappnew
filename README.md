@@ -150,21 +150,29 @@ npm run preview:pages     # http://127.0.0.1:8789
 
 ### 部署到 Vercel（同源 Node Functions，免翻译桥）
 
-抓取层对 Vercel 同样是「同源 Function」：`api/[...path].mjs` 把 `/api/*` 直接交给
+抓取层对 Vercel 同样是「同源 Function」：`api/index.mjs` 把 `/api/*` 全部交给
 `server/router.mjs`。与 Cloudflare 的不同点只在「外壳」——Vercel 的 Node 运行时原生就是 Node 的
 `req`/`res`，`router.mjs` 的「类 Node 契约」直接满足，**不需要**像 Cloudflare 那样写一层
 Web Request ↔ Node 的翻译桥（`functions/_lib/bridge.mjs`）。
 
-> **关于 `.mjs` 扩展名**：Vercel 的 Node 函数即使在 `package.json` 里设了 `"type": "module"`，
-> 历史上仍可能把 `api/` 下的 `.js` 当 CommonJS 处理，导致 `import` 直接语法报错、函数加载失败、
-> `/api/health` 永远 500。Vercel 官方保证 `.mjs` 一定按 ESM 执行，所以入口用 `.mjs`。
-> `vercel.json` 的 `rewrites` 也已排除 `/api/`，避免 SPA 回退把接口抢走。
+> **为什么用固定入口 `api/index.mjs` 而不是 `api/[...path].mjs` catch-all？**
+> Vercel 的 `api/` 目录 catch-all 有两个实测坑：① 只能匹配「单级」路径，`/api/live/sources`、
+> `/api/source/test` 这类多级路径会在 Vercel 层直接 404（`x-vercel-error: NOT_FOUND`），到不了函数；
+> ② catch-all 下 `req.url` 是否带 `/api` 前缀不一致，按 `/api/xxx` 匹配会偶发 404。
+> 因此改用固定入口 `api/index.mjs`，并由 `vercel.json` 的 rewrite
+> `{ "source": "/api/(.*)", "destination": "/api/index?upstreamPath=$1" }`
+> 把所有 `/api/*` 显式转发到它、把真实路径放进 `upstreamPath` 查询参数，路由层据此还原路径，
+> 单级 / 多级路径、GET / POST 全部稳定到达同一个函数。
+>
+> 入口用 `.mjs` 而非 `.js`：Vercel 的 Node 函数即使 `package.json` 设了 `"type": "module"`，
+> 仍可能把 `api/` 下的 `.js` 当 CommonJS 执行，导致 `import` 语法报错、函数加载失败、health 永远 500；
+> `.mjs` 是 Vercel 官方保证按 ESM 执行的扩展名。
 
 目录分工：
 
 ```
-api/[...path].mjs         # Vercel Node 入口（ESM）：/api/* 全部交给 router
-vercel.json               # 构建命令 + SPA 回退（已排除 /api/）+ 函数超时（Node 版本由 package.json engines.node 锁定）
+api/index.mjs            # Vercel Node 入口（ESM）：接收 rewrite 转发来的 /api/*，还原路径后交给 router
+vercel.json               # 构建命令 + /api 转发 rewrite + SPA 回退 + 函数超时（Node 版本由 package.json engines.node 锁定）
 server/router.mjs         # 运行时无关的抓取路由（与本地、Cloudflare 同一份代码）
 server/index.mjs          # Node 外壳：静态托管 + 磁盘存储（本地开发用，云端不依赖）
 ```
