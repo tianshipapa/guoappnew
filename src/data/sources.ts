@@ -2,14 +2,6 @@ import { SourceSite } from '../types';
 
 export const BUILTIN_SOURCES: SourceSite[] = [
   {
-    id: 'wangye',
-    name: '网页',
-    description: 'XBPQ 网页规则聚合源 (远程订阅)',
-    onlineSearch: true,
-    pagedSearch: true,
-    native: true,
-  },
-  {
     id: 'a123',
     name: 'A123',
     description: '电影 · 连续剧 · 综艺 · 动漫 · 多线路',

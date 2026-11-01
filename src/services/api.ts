@@ -38,46 +38,10 @@ export interface ResolvedSource {
 }
 
 /** 有原生实现的站源（其余走示例数据兜底，避免整站空白）。 */
-const NATIVE_SOURCES = new Set(['a123', 'ikanbot', 'wangye', 'guipian', 'hanxiaoquan']);
+const NATIVE_SOURCES = new Set(['a123', 'ikanbot', 'guipian', 'hanxiaoquan']);
 
-/** 「网页」聚合源：远程订阅的 XBPQ 规则，首次用时拉取并缓存。 */
-const WANGYE_CONFIG_URL =
-  'https://raw.githubusercontent.com/wokaotianshi123/wokaotianshi123.github.io/refs/heads/main/hongguo/config.json';
-let wangyePayloadCache: { source: string; base: string; kind: string; rule: string } | null = null;
-let wangyePending: Promise<any> | null = null;
-
-async function wangyePayload() {
-  if (wangyePayloadCache) return wangyePayloadCache;
-  if (wangyePending) return wangyePending;
-  wangyePending = (async () => {
-    try {
-      // 一次请求完成「拉订阅 + 解析规则」，全程在本机抓取服务里做
-      const result = await nativeCore.subscribe(WANGYE_CONFIG_URL);
-      const draft = (result.drafts || [])[0];
-      if (!draft) throw new Error('订阅里没有可识别的 XBPQ 规则');
-      wangyePayloadCache = {
-        source: 'wangye',
-        base: draft.base || '',
-        kind: draft.kind || 'xbpq',
-        rule: draft.rule || '',
-      };
-      return wangyePayloadCache;
-    } catch (error) {
-      console.warn('[wangye] 远程订阅不可用：', (error as Error).message);
-      return null;
-    } finally {
-      wangyePending = null;
-    }
-  })();
-  return wangyePending;
-}
-
-/** 统一取请求体：自定义源读本地存储，网页源读远程订阅。 */
+/** 统一取请求体：自定义源读本地存储，其余原生源直接取规则。 */
 async function payloadFor(sourceId: string) {
-  if (sourceId === 'wangye') {
-    const payload = await wangyePayload();
-    return payload || { source: sourceId, base: '', kind: 'xbpq', rule: '' };
-  }
   return sourcePayload(sourceId);
 }
 
@@ -202,7 +166,7 @@ export const apiService = {
     }
 
     // 兜底：示例数据（本机服务不可达时保证界面不空白）
-    let pool = SAMPLE_DRAMAS.filter((d) => d.source === sourceId || sourceId === 'wangye');
+    let pool = SAMPLE_DRAMAS;
     if (category && category !== 'recommend') {
       pool = pool.filter((d) => d.category === category || d.tags.some((t) => t.includes(category)));
     }
@@ -269,7 +233,7 @@ export const apiService = {
     const lower = q.toLowerCase();
     let pool = SAMPLE_DRAMAS;
     if (sourceId && sourceId !== 'all') {
-      pool = pool.filter((d) => d.source === sourceId || sourceId === 'wangye');
+      pool = pool.filter((d) => d.source === sourceId);
     }
     return pool.filter(
       (d) =>
@@ -402,7 +366,7 @@ export const apiService = {
       SAMPLE_DRAMAS.find((d) => d.id === dramaId) ||
       SAMPLE_DRAMAS.flatMap((d) => d.peers || []).find((p) => p.id === dramaId) || {
         id: dramaId,
-        source: source || 'wangye',
+        source: source || 'demo',
         sourceName: sourceNameOf(source),
         title: '影片详情',
         description: '暂无更多详情介绍',

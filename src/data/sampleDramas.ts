@@ -39,8 +39,8 @@ export function generateEpisodes(dramaId: string, count: number, dramaTitle: str
 export const SAMPLE_DRAMAS: Drama[] = [
   {
     id: 'hg_101',
-    source: 'wangye',
-    sourceName: '网页',
+    source: 'demo',
+    sourceName: '示例',
     title: '龙王出狱：都市战神归来',
     description: '五年前，秦风遭挚爱陷害入狱，在神秘监狱中拜九位绝世奇人为师，继承通天神功与盖世医术。五年后龙王出狱，昔日仇敌已成豪门巨擘，而忠心旧部正遭受百般欺辱！龙王一怒，天地变色，誓要让血债血偿！',
     cover: 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=600&auto=format&fit=crop&q=80',
@@ -81,8 +81,8 @@ export const SAMPLE_DRAMAS: Drama[] = [
   },
   {
     id: 'hg_102',
-    source: 'wangye',
-    sourceName: '网页',
+    source: 'demo',
+    sourceName: '示例',
     title: '重生成首富的隐婚娇妻',
     description: '前世被恶毒继母和渣男算计惨死，重生回到订婚那一晚！苏念果断踢掉渣男，转身与传闻中暴戾冷酷的商界帝王顾司夜领证协议隐婚。本以为只是一场交易，没想到禁欲冷面的顾总裁竟把她宠上了天！',
     cover: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=600&auto=format&fit=crop&q=80',
@@ -97,8 +97,8 @@ export const SAMPLE_DRAMAS: Drama[] = [
   },
   {
     id: 'hg_103',
-    source: 'wangye',
-    sourceName: '网页',
+    source: 'demo',
+    sourceName: '示例',
     title: '天医神婿',
     description: '隐世医圣隐姓埋名入赘三年，遭丈母娘冷嘲热讽，被家族亲戚百般刁难。直到那一天，华夏战神八百里加急跪求神医出山，全球财阀蜂拥而至……他解开封印，震惊全城！',
     cover: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=600&auto=format&fit=crop&q=80',
@@ -127,8 +127,8 @@ export const SAMPLE_DRAMAS: Drama[] = [
   },
   {
     id: 'hg_104',
-    source: 'wangye',
-    sourceName: '网页',
+    source: 'demo',
+    sourceName: '示例',
     title: '大唐逍遥小地主',
     description: '现代农科院高材生穿越到大唐初年，成为一个边陲小县的破落侯爷之子。没有系统？那便靠现代科技酿烈酒、炼精盐、制火药、造水车！李世民微服私访，惊呼：朕的大唐怎不如你这一个小小山庄？！',
     cover: 'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?w=600&auto=format&fit=crop&q=80',
@@ -143,8 +143,8 @@ export const SAMPLE_DRAMAS: Drama[] = [
   },
   {
     id: 'hg_105',
-    source: 'wangye',
-    sourceName: '网页',
+    source: 'demo',
+    sourceName: '示例',
     title: '真千金她是满级大佬',
     description: '流落在外十八年的真千金被顾家找回，全城都以为她是个怯懦土包子。假千金挑衅？她反手甩出顶级黑客、国医圣手、国际财团幕后操盘手等多重神级马甲！亲生父母与三个总裁哥哥悔不当初！',
     cover: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=600&auto=format&fit=crop&q=80',
@@ -159,8 +159,8 @@ export const SAMPLE_DRAMAS: Drama[] = [
   },
   {
     id: 'hg_106',
-    source: 'wangye',
-    sourceName: '网页',
+    source: 'demo',
+    sourceName: '示例',
     title: '修仙十万年后我下山了（漫剧）',
     description: '在禁地闭关十万年，李长生修至无上大道。下山重返红尘，发现当年随手点化的小道童已成为天庭至尊，养的一只灵犬都成了妖皇。且看老祖重游人间，谁能奈我何！',
     cover: 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=600&auto=format&fit=crop&q=80',
@@ -175,8 +175,8 @@ export const SAMPLE_DRAMAS: Drama[] = [
   },
   {
     id: 'hg_107',
-    source: 'wangye',
-    sourceName: '网页',
+    source: 'demo',
+    sourceName: '示例',
     title: '赛博纪元：AI觉醒之刃（AI剧）',
     description: '2088年新霓虹城，全由深度AI生成的高拟真科幻视效大片。底层义体维修师林原偶得一枚失控的量子AI核心，被巨型寡头科技财阀全球追杀。他在虚拟神经网络与现实机械洪流之间杀出一条血路！',
     cover: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=600&auto=format&fit=crop&q=80',
@@ -191,8 +191,8 @@ export const SAMPLE_DRAMAS: Drama[] = [
   },
   {
     id: 'hg_108',
-    source: 'wangye',
-    sourceName: '网页',
+    source: 'demo',
+    sourceName: '示例',
     title: '迷雾刑侦档案',
     description: '海滨小城接连发生离奇连环悬案，现场唯一的线索只有一枚染血的古董怀表。省厅空降冷峻刑侦专家与当地敏锐女法医联手，抽丝剥茧探寻二十年前尘封的黑暗迷案，真相令人不寒而栗！',
     cover: 'https://images.unsplash.com/photo-1485846234645-a62644f84728?w=600&auto=format&fit=crop&q=80',

@@ -150,11 +150,11 @@ function baseOf(payload, rule, fallback) {
 }
 
 /**
- * 「规则型」站源：自定义源，以及内置的「网页」聚合源（XBPQ 远程订阅）。
- * 两者都必须随请求带上 rule/base，服务端不做内置绑定。
+ * 「规则型」站源：仅自定义源（XBPQ / MacCMS 接口）。
+ * 必须随请求带上 rule/base，服务端不做内置绑定。
  */
 function isRuleSource(source) {
-  return source === 'wangye' || String(source || '').startsWith('custom:');
+  return String(source || '').startsWith('custom:');
 }
 
 /** 站源是否有原生实现（否则前端走示例数据，避免整站空白）。 */
