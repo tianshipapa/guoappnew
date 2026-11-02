@@ -40,13 +40,29 @@ if (process.env.GUOAPP_USE_ENV_PROXY !== '1') {
 let directDispatcher;
 let directDispatcherResolved = false;
 
+/**
+ * 出口 dispatcher（仅 Node 运行时可用，CF/Vercel Edge 没有 undici）。
+ *
+ * 默认是「不带 proxy 的 Agent」——纯直连、无视环境里的 HTTP_PROXY（用户机器上的
+ * 科学上网代理一关，全局代理会让所有抓取报 10061，整站瘫痪）。
+ *
+ * 例外：配置了 GUOAPP_FETCH_PROXY（例如买的国内隧道代理 `http://user:pass@host:port`）
+ * 时改用 ProxyAgent，让出口落到国内 IP——这是「不想自己维护中继机器」时的另一条路，
+ * 只对 Vercel / 本地生效，Cloudflare 部署请用 relay/。
+ */
 async function getDirectDispatcher() {
   if (directDispatcherResolved) return directDispatcher;
   directDispatcherResolved = true;
   try {
     const undici = await import('undici');
-    // 不设 proxy 参数 = 纯直连；默认 Agent 不读任何环境代理变量。
-    directDispatcher = new undici.Agent();
+    const proxy = envValue('GUOAPP_FETCH_PROXY');
+    if (/^https?:\/\/\S+$/i.test(proxy)) {
+      directDispatcher = new undici.ProxyAgent(proxy);
+      console.log('[fetch] 已启用抓取代理出口（GUOAPP_FETCH_PROXY）');
+    } else {
+      // 不设 proxy 参数 = 纯直连；默认 Agent 不读任何环境代理变量。
+      directDispatcher = new undici.Agent();
+    }
   } catch {
     directDispatcher = null;
   }
@@ -169,51 +185,181 @@ function decodeBody(buffer, contentType = '') {
 }
 
 /**
- * 可选抓取中继。部署在境外（Cloudflare Pages / Vercel）时，大量采集站只放行
- * 中国大陆 IP，直连必然 403 或连接被拒——这不是规则问题，本地跑就好。
- * 想在这种情况下也能用，就配一个「中国大陆可访问」的中继：
+ * 可选抓取中继。部署在境外（Cloudflare Pages / Vercel / 任意海外机房）时，
+ * 大量采集站只放行中国大陆 IP：直连不是 403 就是连接被重置。这不是规则问题，
+ * 唯一的解就是换出口——把请求交给一个「中国大陆可达」的转发点：
  *   GUOAPP_FETCH_RELAY=https://relay.example.com/?url=
- * 或支持占位符的形态：https://relay.example.com/fetch?target={url}
- * 中继只要把目标页面正文原样返回即可（国内小机器上一个反向代理就够）。
+ *   GUOAPP_FETCH_RELAY=https://a.example.com/?url=,https://b.example.com/?url=   # 多中继按序故障切换
+ *   GUOAPP_FETCH_RELAY=https://relay.example.com/fetch?target={url}              # 占位符形态
+ *   GUOAPP_FETCH_RELAY_TOKEN=xxx        # 中继要求鉴权时带 x-guopp-token
+ *   GUOAPP_FETCH_RELAY_FORCE=1          # 所有抓取都先走中继（站源全被拦时省掉必然失败的直连）
+ * 中继实现见仓库 relay/ 目录（零依赖单文件，国内小机器 / 云函数都能跑）。
+ *
+ * 注意：Cloudflare Pages 的环境变量在 context.env 里，process.env 读不到，
+ * 所以边缘入口要调用 configureFetch() 显式注入（见 functions/api/[[path]].js）。
  */
-function relayEndpoint() {
+let relayState = null;
+
+function envValue(key) {
   if (typeof process === 'undefined' || !process.env) return '';
-  return String(process.env.GUOAPP_FETCH_RELAY || '').trim();
+  return String(process.env[key] || '').trim();
 }
 
-async function fetchViaRelay(address, headers, timeout) {
-  const relay = relayEndpoint();
-  if (!relay) return null;
-  const encoded = encodeURIComponent(address);
-  const target = relay.includes('{url}') ? relay.split('{url}').join(encoded) : relay + encoded;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Math.min(timeout, 15000));
-  try {
-    const response = await fetch(target, {
-      headers: {
-        'User-Agent': DEFAULT_UA,
-        Accept: 'text/html,application/xhtml+xml,*/*;q=0.8',
-        // 自建中继可以直接读这个头转发，省掉自己解析查询串
-        'x-guopp-target': address,
-        'x-guopp-referer': headers?.Referer || '',
-      },
-      signal: controller.signal,
-    });
-    const buffer = Buffer.from(await response.arrayBuffer());
-    if (!response.ok || buffer.length === 0) return null;
-    return {
-      text: decodeBody(buffer, response.headers.get('content-type') || ''),
-      // 中继拿不到上游的重定向结果，相对链接按原地址补全
-      url: address,
-      status: 200,
-      headers: response.headers,
-      relayed: true,
-    };
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
+const TRUTHY = /^(1|true|yes|on)$/i;
+
+function buildRelayState(source = {}) {
+  const raw = String(source.relay ?? envValue('GUOAPP_FETCH_RELAY'));
+  const token = String(source.token ?? envValue('GUOAPP_FETCH_RELAY_TOKEN')).trim();
+  const force = TRUTHY.test(String(source.force ?? envValue('GUOAPP_FETCH_RELAY_FORCE')).trim());
+  const list = raw
+    .split(/[,\n;]+/)
+    .map((item) => item.trim())
+    .filter((item) => /^https?:\/\/\S+$/i.test(item));
+  return { list, token, force, signature: `${list.join('\u0001')}#${token}#${force ? 1 : 0}` };
+}
+
+/**
+ * 注入抓取出口配置（入口层调用一次即可）。
+ * 同一份配置重复调用直接返回，避免每个请求都重解析一遍列表。
+ * @param {{relay?: string, token?: string, force?: string|boolean}} options
+ */
+export function configureFetch(options = {}) {
+  const next = buildRelayState(options);
+  if (relayState && relayState.signature === next.signature) return relayState;
+  relayState = next;
+  if (next.list.length) {
+    console.log(`[fetch] 抓取中继已启用：${next.list.length} 个出口${next.force ? '（强制）' : ''}`);
   }
+  return relayState;
+}
+
+function relaySetting() {
+  return relayState || configureFetch();
+}
+
+// 某个域名一旦确认「直连必被拦」，短时间内直接走中继：
+// 否则每次列表/详情/取流都要先等一次必然失败的直连（海外机房常见 10s 超时）。
+const RELAY_HOST_TTL = 10 * 60 * 1000;
+const relayHosts = new Map();
+
+/** 仅供测试：清掉中继配置与「该 host 需要中继」的记忆。 */
+export function resetFetchRelay() {
+  relayState = null;
+  relayHosts.clear();
+}
+
+/** 当前抓取出口状态（/api/health 与排障用：一眼看出中继到底生效没）。 */
+export function relayStatus() {
+  const setting = relaySetting();
+  return {
+    enabled: setting.list.length > 0,
+    exits: setting.list.length,
+    force: setting.force,
+    media: TRUTHY.test(envValue('GUOAPP_FETCH_RELAY_MEDIA')),
+    // 只对 Node 运行时有效（Cloudflare 没有 undici，配了也不生效）
+    proxy: /^https?:\/\/\S+$/i.test(envValue('GUOAPP_FETCH_PROXY')),
+    // 已被判定「直连必被拦、走中继」的域名
+    relayedHosts: [...relayHosts.keys()],
+  };
+}
+
+function hostOf(address) {
+  try {
+    return new URL(address).host;
+  } catch {
+    return '';
+  }
+}
+
+function relayKnowsHost(host) {
+  if (!host) return false;
+  const expireAt = relayHosts.get(host);
+  if (!expireAt) return false;
+  if (expireAt < Date.now()) {
+    relayHosts.delete(host);
+    return false;
+  }
+  return true;
+}
+
+function relayRememberHost(host) {
+  if (!host) return;
+  // 记忆表不需要精确：超过 500 条就整体清空，避免长期运行的 Node 进程里无限增长
+  if (relayHosts.size > 500) relayHosts.clear();
+  relayHosts.set(host, Date.now() + RELAY_HOST_TTL);
+}
+
+function relayTarget(prefix, address) {
+  const encoded = encodeURIComponent(address);
+  if (prefix.includes('{url_raw}')) return prefix.split('{url_raw}').join(address);
+  if (prefix.includes('{url}')) return prefix.split('{url}').join(encoded);
+  return prefix + encoded;
+}
+
+/**
+ * 走中继抓一次。多个中继按顺序试，前一个挂了自动换下一个。
+ * 中继只要把上游状态码与正文原样透传即可（见 relay/relay.mjs）。
+ * @returns {Promise<{text:string,url:string,status:number,headers:Headers,relayed:true}|null>}
+ */
+async function fetchViaRelay(address, headers, timeout, request = {}) {
+  const setting = relaySetting();
+  if (!setting.list.length) return null;
+
+  const host = hostOf(address);
+  const method = String(request.method || 'GET').toUpperCase();
+  const referer = headers?.Referer || headers?.referer || '';
+  const ua = headers?.['User-Agent'] || headers?.['user-agent'] || DEFAULT_UA;
+  const body = method === 'GET' || method === 'HEAD' ? undefined : request.body;
+
+  for (const prefix of setting.list) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.min(timeout, 20000));
+    try {
+      const relayHeaders = {
+        'User-Agent': ua,
+        Accept: headers?.Accept || 'text/html,application/xhtml+xml,*/*;q=0.8',
+        // 自建中继可以直接读这些头拼上游请求，省掉自己解析查询串
+        'x-guopp-target': address,
+        'x-guopp-method': method,
+        'x-guopp-referer': referer,
+      };
+      if (headers?.['Accept-Language']) relayHeaders['x-guopp-accept-language'] = headers['Accept-Language'];
+      if (headers?.Cookie) relayHeaders['x-guopp-cookie'] = headers.Cookie;
+      if (method !== 'GET' && method !== 'HEAD') {
+        relayHeaders['Content-Type'] = headers?.['Content-Type'] || 'application/x-www-form-urlencoded';
+      }
+      if (setting.token) relayHeaders['x-guopp-token'] = setting.token;
+
+      const response = await fetch(relayTarget(prefix, address), {
+        method,
+        headers: relayHeaders,
+        body,
+        signal: controller.signal,
+        redirect: 'follow',
+      });
+      const buffer = Buffer.from(await response.arrayBuffer());
+      // 中继自己挂了（502/504 且没带 x-guopp-relayed）→ 换下一个中继
+      const viaRelay = response.headers.get('x-guopp-relayed') === '1';
+      if (!viaRelay && !response.ok) continue;
+      if (buffer.length === 0 && response.status >= 400) continue;
+      // 中继把上游状态码透了回来：403 就是上游 403，不再是「中继成功但内容为空」
+      const status = Number(response.headers.get('x-guopp-status') || response.status) || 200;
+      if (status >= 200 && status < 400) relayRememberHost(host);
+      return {
+        text: decodeBody(buffer, response.headers.get('content-type') || ''),
+        // 中继拿不到上游的重定向结果，相对链接按原地址补全
+        url: response.headers.get('x-guopp-url') || address,
+        status,
+        headers: response.headers,
+        relayed: true,
+      };
+    } catch {
+      /* 换下一个中继 */
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return null;
 }
 
 /**
@@ -252,6 +398,19 @@ export async function fetchText(address, options = {}) {
   const attempts = Math.max(0, Number.parseInt(retries, 10) || 0) + 1;
   const startedAt = Date.now();
   let lastError = null;
+
+  const setting = relaySetting();
+  const host = hostOf(address);
+  let relayTried = false;
+
+  // 已知「直连必被拦」的域名 / 强制模式：先走中继，省掉一次注定失败的直连等待
+  if (setting.list.length && (setting.force || relayKnowsHost(host))) {
+    relayTried = true;
+    const early = await fetchViaRelay(address, requestHeaders, timeout, { method, body });
+    if (early && early.status < 400) return early;
+    // 中继这次也没成：清掉记忆，继续直连碰运气
+    relayHosts.delete(host);
+  }
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     if (attempt > 1) {
@@ -294,10 +453,14 @@ export async function fetchText(address, options = {}) {
         lastError = new Error(describeStatus(result.status, address));
         continue;
       }
-      if ((result.status === 403 || result.status === 451) && relayEndpoint()) {
+      if ((result.status === 403 || result.status === 451) && setting.list.length) {
         // 403 多为「只放行中国大陆 IP」：直接出口被拦，交给中继再试一次
-        const relayed = await fetchViaRelay(address, requestHeaders, timeout);
-        if (relayed) return relayed;
+        relayTried = true;
+        const relayed = await fetchViaRelay(address, requestHeaders, timeout, { method, body });
+        if (relayed && relayed.status < 400) return relayed;
+        if (relayed) return relayed; // 中继也拿到 403：如实把上游状态码交出去
+      } else if (result.status >= 200 && result.status < 400) {
+        relayHosts.delete(host); // 直连能通，清掉「该域名必须走中继」的记忆
       }
       return result;
     } catch (error) {
@@ -313,9 +476,10 @@ export async function fetchText(address, options = {}) {
   }
 
   const failure = lastError || new Error(`抓取失败（${address}）`);
-  // 直连彻底失败（海外机房连不上只放行中国大陆的采集站）时，走可选中继再试一次
-  if (relayEndpoint()) {
-    const relayed = await fetchViaRelay(address, requestHeaders, timeout);
+  // 直连彻底失败（海外机房连不上只放行中国大陆的采集站）时，走可选中继再试一次。
+  // 前面已经试过中继就不再重复，避免一次失败请求把等待时间翻倍。
+  if (setting.list.length && !relayTried) {
+    const relayed = await fetchViaRelay(address, requestHeaders, timeout, { method, body });
     if (relayed) return relayed;
   }
   // 原始 "fetch failed" / workerd 的 "upstream connect failed" 对排查没有任何信息量，
@@ -327,6 +491,54 @@ export async function fetchText(address, options = {}) {
     throw describeFetchError(address, failure);
   }
   throw failure;
+}
+
+/**
+ * 中继转发二进制（m3u8 清单 / 视频分片）。
+ * 实测多数视频 CDN（hd.kuktxu.com 等）全球可达，只有站点页做了地域限制，
+ * 所以默认关闭；某些源连 CDN 也只放行部分地区时，配 GUOAPP_FETCH_RELAY_MEDIA=1 打开。
+ * 走流式转发，不整段缓冲，避免大分片占用内存。
+ */
+async function fetchBinaryViaRelay(address, headers, timeout, { method = 'GET' } = {}) {
+  const setting = relaySetting();
+  if (!setting.list.length) return null;
+  if (!TRUTHY.test(envValue('GUOAPP_FETCH_RELAY_MEDIA'))) return null;
+
+  for (const prefix of setting.list) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.min(timeout, 25000));
+    try {
+      const relayHeaders = {
+        'User-Agent': headers?.['User-Agent'] || DEFAULT_UA,
+        'x-guopp-target': address,
+        'x-guopp-method': 'GET',
+        'x-guopp-referer': headers?.Referer || '',
+      };
+      if (headers?.Range) relayHeaders['x-guopp-range'] = headers.Range;
+      if (setting.token) relayHeaders['x-guopp-token'] = setting.token;
+
+      const response = await fetch(relayTarget(prefix, address), {
+        method: 'GET',
+        headers: relayHeaders,
+        signal: controller.signal,
+      });
+      if (response.status >= 500 && response.headers.get('x-guopp-relayed') !== '1') {
+        clearTimeout(timer);
+        continue;
+      }
+      clearTimeout(timer); // 流已交给调用方，不能再 abort
+      return {
+        status: Number(response.headers.get('x-guopp-status') || response.status) || 200,
+        headers: response.headers,
+        body: response.body,
+        url: response.headers.get('x-guopp-url') || address,
+        relayed: true,
+      };
+    } catch {
+      clearTimeout(timer);
+    }
+  }
+  return null;
 }
 
 /** 抓取二进制（播放器转发、探测清单）。 */
@@ -351,6 +563,8 @@ export async function fetchBinary(address, options = {}) {
       url: response.url || address,
     };
   } catch (error) {
+    const relayed = await fetchBinaryViaRelay(address, requestHeaders, timeout, { method }).catch(() => null);
+    if (relayed) return relayed;
     if (error?.name === 'AbortError' || /aborted/i.test(String(error?.message))) {
       throw new Error('请求超时');
     }

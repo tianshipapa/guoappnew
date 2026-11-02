@@ -31,7 +31,7 @@
 
 import { createHash } from 'node:crypto';
 
-import { fetchText, fetchBinary, mergeHeaders, DEFAULT_UA } from './lib/http.mjs';
+import { fetchText, fetchBinary, mergeHeaders, DEFAULT_UA, relayStatus } from './lib/http.mjs';
 import { resolveCover, coverCacheStats } from './lib/covers.mjs';
 import { parseRule, normalizeKey } from './lib/xbpq/rule.mjs';
 import { detectFamilies } from './lib/xbpq/template.mjs';
@@ -591,6 +591,8 @@ export async function handleRequest(req, res, url) {
       service: 'guoappnew-native-core',
       runtime,
       library: libraryBackend(),
+      // 抓取出口：海外部署时靠中继绕开「只放行中国大陆 IP」的站源限制
+      relay: relayStatus(),
       time: Date.now(),
       providers: ['xbpq', 'a123', 'ikanbot', 'guipian', 'hanxiaoquan', 'maccms-api', 'live', 'library'],
     });

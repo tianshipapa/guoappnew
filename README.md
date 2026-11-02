@@ -156,7 +156,42 @@ npm run preview:pages     # http://127.0.0.1:8789
 采集站的地域限制（影响所有自定义 XBPQ 源）：
 - 多数采集站**只放行中国大陆 IP**。用 `agneschoi.com` / `51shumai.cn` / `jennyhow.com` 实测，从奥地利、保加利亚、俄罗斯、新加坡、越南等 6 个海外节点访问，分别得到 `403 Forbidden`、`Connection refused`、`Broken pipe`——而国内网络下同一个地址是 200 且能完整解析、播放。所以**部署在 Cloudflare Pages / Vercel 的实例抓不到这类站源是网络位置决定的，不是规则写错**；本地运行（`npm run dev` 或桌面壳）没有这个问题。
 - 抓取层现在会把这类失败讲清楚：上游 4xx/5xx 直接报「上游拒绝访问（HTTP 403 · 站点）：多数采集站只放行中国大陆 IP…」，不再把错误页当列表页解析成「数组没有匹配到站点结构」；`fetch failed` 会翻成「域名解析失败（ENOTFOUND）/ 连接被站点中断（ECONNRESET）/ 无法建立连接」并带上主机名，同时按 3 次机会退避重试（408/429/5xx 与网络错误才重试）。
-- 确实需要「境外部署 + 国内站源」时，配一个国内可达的中继即可：环境变量 `GUOAPP_FETCH_RELAY=https://relay.example.com/?url=`（也支持 `...?target={url}` 占位符形态）。直连失败或返回 403/451 时会自动改走中继，中继只需原样返回目标页面正文。
+- 确实需要「境外部署 + 国内站源」时，唯一有效的方向是**让出口 IP 落在中国大陆**（换 Cloudflare 节点、换 Vercel 区域、开 Smart Placement 都没用——拦的是 IP 归属地，不是 ASN 也不是 UA）。可选路径见下一节。
+
+#### 破除地域限制的五条路（按成本排序）
+
+| 方案 | 成本 | 代价 | 适合 |
+| --- | --- | --- | --- |
+| 国内小机器跑 `relay/` | 百元级/年 | 多一台机器要维护 | 所有部署形态，最稳 |
+| 家宽 + Cloudflare Tunnel | 免费 | 上行带宽小；家宽协议一般不允许对外提供服务 | 自用、只抓页面 |
+| 国内云函数容器镜像（FC / SCF） | 近零 | 共享 NAT 出口可能被站源风控拉黑 | 不想维护机器 |
+| 国内隧道代理 IP（`GUOAPP_FETCH_PROXY`） | 按量几十元/月 | 只对 Vercel / 本地生效（Cloudflare 无 undici）；第三方 IP 质量参差 | 不想维护机器、也不想买服务器 |
+| 整体迁到 EdgeOne Pages / ESA Pages | 免费额度 | 加速区含中国大陆必须用**已备案**域名 | 想一劳永逸 |
+| 桌面壳 / 客户端直连 | 免费 | Web 版受 CORS 限制用不了 | 有客户端形态时最彻底 |
+
+实测补充：**视频 CDN 大多不限地域**（`hd.kuktxu.com` 全球节点都是 200，`play.hhuus.com` 只有部分欧洲节点 403），被拦的基本只有站点页面。所以中继平时只转发几十 KB 的 HTML，家宽的上行带宽都够用；确实要连分片一起转再开 `GUOAPP_FETCH_RELAY_MEDIA=1`。
+
+中继的配置项（Pages / Vercel 都是同一套环境变量）：
+
+| 变量 | 作用 |
+| --- | --- |
+| `GUOAPP_FETCH_RELAY` | 中继地址，`https://relay.example.com/?url=` 或 `...?target={url}`；多个用逗号分隔按序故障切换 |
+| `GUOAPP_FETCH_RELAY_TOKEN` | 中继要求鉴权时带上（`x-guopp-token`） |
+| `GUOAPP_FETCH_RELAY_FORCE=1` | 所有抓取都先走中继，跳过注定失败的直连 |
+| `GUOAPP_FETCH_RELAY_MEDIA=1` | 分片 / 清单也允许走中继（默认关闭） |
+
+只想给 Vercel / 本地部署换个出口、不想维护中继机器时，也可以直接买国内隧道代理：
+
+```bash
+GUOAPP_FETCH_PROXY=http://账号:密码@tps.example.com:15818   # 仅 Node 运行时生效
+```
+
+它走 undici 的 ProxyAgent，和直连二选一；Cloudflare 没有 undici，配了不起作用（会回落直连，`/api/health` 的 `relay.proxy` 只反映配置是否存在）。
+
+直连失败或返回 403/451 时自动改走中继；某个域名一旦确认要走中继，10 分钟内直接走，不再每次白等一次超时。中继实现见 [`relay/`](relay/README.md)（零依赖单文件 + Dockerfile + 四种部署档位）。
+
+> Cloudflare Pages 的环境变量在 `context.env` 里、`process.env` 读不到，入口已经显式注入；此前直接读 `process.env` 的写法在 CF 上配了也不生效（Vercel 的 Node 运行时不受影响）。
+
 
 默认跟随同源，一般无需配置。仍想连本机或另一台机器上的抓取服务（例如把秀果直播换成本地 8788）时：右上角状态灯点开 →「站源管理 → 抓取服务地址」，留空表示跟随当前站点，填 `http://127.0.0.1:8788` 即覆盖同源默认值，地址保存在浏览器本地。
 

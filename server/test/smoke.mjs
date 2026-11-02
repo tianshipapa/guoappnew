@@ -827,4 +827,43 @@ console.log('Vercel 兼容层（Node req/res 免桥接）');
   });
 }
 
+// ---------------------------------------------------------------- 抓取中继（出口）
+// 海外机房部署时靠它把抓取转到「中国大陆可达」的出口。这里只验配置解析（不联网）。
+console.log('抓取中继出口配置');
+{
+  const { configureFetch, resetFetchRelay } = await import('../lib/http.mjs');
+
+  check('单中继解析', () => {
+    const state = configureFetch({ relay: 'https://a.test/?url=', token: 't1' });
+    assert.equal(state.list.length, 1);
+    assert.equal(state.list[0], 'https://a.test/?url=');
+    assert.equal(state.token, 't1');
+    assert.equal(state.force, false);
+  });
+  check('多中继逗号分隔，按顺序故障切换', () => {
+    const state = configureFetch({ relay: 'https://a.test/?url=, https://b.test/fetch?target={url}' });
+    assert.deepEqual(state.list, ['https://a.test/?url=', 'https://b.test/fetch?target={url}']);
+  });
+  check('非法中继地址直接丢弃（不拖垮抓取）', () => {
+    const state = configureFetch({ relay: 'ftp://x.test/?url=,not-a-url' });
+    assert.equal(state.list.length, 0);
+  });
+  check('强制模式开关', () => {
+    assert.equal(configureFetch({ relay: 'https://a.test/?url=', force: '1' }).force, true);
+    assert.equal(configureFetch({ relay: 'https://a.test/?url=', force: '0' }).force, false);
+  });
+  check('同一份配置复用同一状态（每请求不重解析）', () => {
+    const a = configureFetch({ relay: 'https://a.test/?url=', force: '1' });
+    const b = configureFetch({ relay: 'https://a.test/?url=', force: true });
+    assert.equal(a, b);
+  });
+  check('未配置中继时 list 为空（直连，行为不变）', () => {
+    resetFetchRelay();
+    const state = configureFetch({ relay: '' });
+    assert.equal(state.list.length, 0);
+    assert.equal(state.force, false);
+  });
+  resetFetchRelay();
+}
+
 console.log(`\n通过 ${passed} 项${process.exitCode ? '（有失败）' : '，全部正常'}`);

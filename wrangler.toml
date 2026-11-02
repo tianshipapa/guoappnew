@@ -23,3 +23,15 @@ compatibility_flags = ["nodejs_compat"]
 # [[kv_namespaces]]
 # binding = "LIBRARY_KV"
 # id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+
+# 抓取中继（可选）：agneschoi / 51shumai 这类站源只放行中国大陆 IP，
+# 部署在 Pages（海外节点）直连必然 403 或连接被重置。配一个国内出口即可：
+#   控制台 Settings → Environment variables（Production）里加：
+#     GUOAPP_FETCH_RELAY       = "https://relay.example.com/?url="
+#     GUOAPP_FETCH_RELAY_TOKEN = "和 relay 那边一致的随机串"
+#   现成的中继实现见 relay/（零依赖单文件 + Dockerfile）。
+# 注意：Pages 的环境变量只出现在 context.env，process.env 读不到，
+# 入口（functions/api/[[path]].js）已显式注入；[vars] 里写同样生效。
+# [vars]
+# GUOAPP_FETCH_RELAY = "https://relay.example.com/?url="
+# 配好后访问 /api/health 能看到 relay.enabled = true。

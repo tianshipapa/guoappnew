@@ -10,6 +10,7 @@
 // 秀果直播的 :81 面板源在云端不可用，需要本地服务。Vercel 不受此限（见 api/[...path].js）。
 
 import { handleRequest, setRuntime } from '../../server/router.mjs';
+import { configureFetch } from '../../server/lib/http.mjs';
 import { setLivePortRestricted } from '../../server/lib/live/index.mjs';
 import { useKvLibraryStore } from '../_lib/library-kv.mjs';
 import { createBridge } from '../_lib/bridge.mjs';
@@ -20,9 +21,26 @@ setRuntime('edge');
 setLivePortRestricted(true);
 
 let lastKv = null;
+let lastRelaySignature = '';
+
+/**
+ * Pages 的环境变量只在 context.env 里，process.env 读不到——
+ * 抓取中继必须在这里显式注入，否则 GUOAPP_FETCH_RELAY 配了也没用。
+ */
+function configureRelay(env) {
+  if (!env) return;
+  const relay = env.GUOAPP_FETCH_RELAY;
+  const token = env.GUOAPP_FETCH_RELAY_TOKEN;
+  const force = env.GUOAPP_FETCH_RELAY_FORCE;
+  const signature = `${relay || ''}#${token || ''}#${force || ''}`;
+  if (signature === lastRelaySignature) return;
+  lastRelaySignature = signature;
+  configureFetch({ relay, token, force });
+}
 
 /** KV 绑定只装一次，避免每次请求都清掉 library.mjs 的内存缓存。 */
 function configure(env) {
+  configureRelay(env);
   const kv = env?.LIBRARY_KV;
   if (!kv || kv === lastKv) return;
   lastKv = kv;
