@@ -485,7 +485,7 @@ export const CustomSourcesModal: React.FC<CustomSourcesModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4">
-      <div className="relative bg-[#121624] border border-slate-800 rounded-2xl w-full max-w-2xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
+      <div className="relative bg-black border border-slate-800 rounded-2xl w-full max-w-2xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-slate-800 shrink-0 gap-2">
           <div className="flex items-center gap-2 min-w-0">
@@ -545,7 +545,7 @@ export const CustomSourcesModal: React.FC<CustomSourcesModalProps> = ({
         </div>
 
         {/* 本机服务状态 */}
-        <div className="px-4 py-2 border-b border-slate-800 bg-slate-900/60 shrink-0 text-[11px]">
+        <div className="px-4 py-2 border-b border-slate-800 bg-black shrink-0 text-[11px]">
           {coreOnline === null ? (
             <div className="flex items-center gap-2 text-slate-400">
               <Loader2 className="w-3.5 h-3.5 animate-spin" />

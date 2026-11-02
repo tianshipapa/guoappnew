@@ -23,7 +23,7 @@ export const SourceVisibilityModal: React.FC<SourceVisibilityModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4">
-      <div className="bg-[#121624] border border-slate-800 rounded-2xl w-full max-w-xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+      <div className="bg-black border border-slate-800 rounded-2xl w-full max-w-xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-slate-800 shrink-0">
           <div className="flex items-center gap-2">
@@ -78,7 +78,7 @@ export const SourceVisibilityModal: React.FC<SourceVisibilityModalProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="p-4 bg-slate-900/60 border-t border-slate-800 flex items-center justify-between shrink-0">
+        <div className="p-4 bg-black border-t border-slate-800 flex items-center justify-between shrink-0">
           <button
             onClick={onEnableAll}
             className="text-xs text-rose-400 hover:text-rose-300 font-medium"

@@ -146,6 +146,9 @@ export async function fetchText(address, options = {}) {
       text: decodeBody(buffer, response.headers.get('content-type') || ''),
       url: response.url || address,
       status: response.status,
+      // 部分站点（含韩小圈）靠 session cookie 串起「列表 → 详情 → 播放页」，
+      // 调用方需要能读到 set-cookie，所以把响应头一并带出（不影响旧调用方）。
+      headers: response.headers,
     };
   } catch (error) {
     if (error?.name === 'AbortError') throw new Error('请求超时');
