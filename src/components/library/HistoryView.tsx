@@ -10,6 +10,8 @@ interface HistoryViewProps {
   onSelectDrama: (drama: Drama, resumeIndex?: number, resumePos?: number) => void;
   onDeleteItems: (keys: { id: string; source: string }[]) => void;
   onClearAll: () => void;
+  /** 嵌在收藏夹分页里时，去掉外层容器与重复标题，只留工具栏和列表 */
+  embedded?: boolean;
 }
 
 export const HistoryView: React.FC<HistoryViewProps> = ({
@@ -17,6 +19,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
   onSelectDrama,
   onDeleteItems,
   onClearAll,
+  embedded = false,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isEditing, setIsEditing] = useState(false);
@@ -88,14 +91,16 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
   };
 
   return (
-    <div className="max-w-5xl mx-auto px-3 md:px-6 py-4">
+    <div className={embedded ? 'py-1' : 'max-w-5xl mx-auto px-3 md:px-6 py-4'}>
       {/* Top Controls */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800">
-        <div className="flex items-center gap-2">
-          <History className="w-5 h-5 text-rose-500" />
-          <h2 className="text-base sm:text-lg font-bold text-slate-100">观看记录</h2>
-          <span className="text-xs text-slate-500">（共 {history.length} 条）</span>
-        </div>
+        {!embedded && (
+          <div className="flex items-center gap-2">
+            <History className="w-5 h-5 text-rose-500" />
+            <h2 className="text-base sm:text-lg font-bold text-slate-100">观看记录</h2>
+            <span className="text-xs text-slate-500">（共 {history.length} 条）</span>
+          </div>
+        )}
 
         <div className="flex items-center gap-2">
           {/* Search bar inside history */}

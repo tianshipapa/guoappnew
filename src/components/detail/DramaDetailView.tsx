@@ -103,7 +103,8 @@ export const DramaDetailView: React.FC<DramaDetailViewProps> = ({
   return (
     <div className="min-h-screen bg-[#0d101a] text-slate-100 pb-20 animate-in fade-in duration-200">
       {/* Top back & action navigation */}
-      <div className="sticky top-0 z-40 bg-[#0d101a]/95 backdrop-blur border-b border-slate-800/80 px-3 md:px-6 py-2.5 flex items-center justify-between">
+      {/* top-14 = 顶部导航栏高度：让本行始终贴在导航栏下方，不遮住站源下拉面板 */}
+      <div className="sticky top-14 z-30 bg-[#0d101a]/95 backdrop-blur border-b border-slate-800/80 px-3 md:px-6 py-2.5 flex items-center justify-between">
         <button
           onClick={onBack}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800/80 hover:bg-slate-750 text-slate-200 text-xs font-semibold border border-slate-700/60 transition-colors"

@@ -1,9 +1,20 @@
 import React, { useState, useMemo } from 'react';
-import { Bookmark, Search, Trash2, CheckSquare, Square, Play, RotateCcw } from 'lucide-react';
+import {
+  Bookmark,
+  Search,
+  Trash2,
+  CheckSquare,
+  Square,
+  Play,
+  RotateCcw,
+  History,
+  ChevronLeft,
+} from 'lucide-react';
 import { FavoriteItem, HistoryItem, Drama, FollowStatus } from '../../types';
 import { matchesPinyin } from '../../utils/pinyin';
 import { SAMPLE_DRAMAS } from '../../data/sampleDramas';
 import { CoverImage } from '../common/CoverImage';
+import { HistoryView } from './HistoryView';
 
 interface FollowViewProps {
   favorites: FavoriteItem[];
@@ -12,6 +23,13 @@ interface FollowViewProps {
   onSelectDrama: (drama: Drama, resumeIndex?: number, resumePos?: number) => void;
   onDeleteItems: (keys: { id: string; source: string }[]) => void;
   onUpdateStatus: (id: string, source: string, status: FollowStatus) => void;
+  /** 播放历史已并入收藏夹，这里需要历史的删除 / 清空回调 */
+  onDeleteHistory: (keys: { id: string; source: string }[]) => void;
+  onClearHistory: () => void;
+  /** 打开时默认停在哪个分页（设置里「播放历史」入口会直接进历史） */
+  initialSection?: 'favorites' | 'history';
+  /** 返回发现页（桌面端底栏隐藏时用） */
+  onBack?: () => void;
 }
 
 export const FollowView: React.FC<FollowViewProps> = ({
@@ -20,7 +38,12 @@ export const FollowView: React.FC<FollowViewProps> = ({
   onSelectDrama,
   onDeleteItems,
   onUpdateStatus,
+  onDeleteHistory,
+  onClearHistory,
+  initialSection = 'favorites',
+  onBack,
 }) => {
+  const [section, setSection] = useState<'favorites' | 'history'>(initialSection);
   const [activeTab, setActiveTab] = useState<'all' | FollowStatus>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [isEditing, setIsEditing] = useState(false);
@@ -102,16 +125,60 @@ export const FollowView: React.FC<FollowViewProps> = ({
 
   return (
     <div className="max-w-5xl mx-auto px-3 md:px-6 py-4">
+      {/* 收藏夹 / 播放历史：历史已并入收藏夹，不再单独占用导航入口 */}
+      <div className="flex items-center gap-2 pb-3">
+        <div className="flex items-center gap-1 p-1 rounded-xl bg-slate-900 border border-slate-800">
+          <button
+            onClick={() => setSection('favorites')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+              section === 'favorites'
+                ? 'bg-rose-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Bookmark className="w-3.5 h-3.5" />
+            <span>收藏夹</span>
+            <span className="text-[10px] opacity-80">{favorites.length}</span>
+          </button>
+          <button
+            onClick={() => setSection('history')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+              section === 'history'
+                ? 'bg-rose-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <History className="w-3.5 h-3.5" />
+            <span>播放历史</span>
+            <span className="text-[10px] opacity-80">{history.length}</span>
+          </button>
+        </div>
+      </div>
+
+      {section === 'history' ? (
+        <HistoryView
+          embedded
+          history={history}
+          onSelectDrama={onSelectDrama}
+          onDeleteItems={onDeleteHistory}
+          onClearAll={onClearHistory}
+        />
+      ) : (
+        <>
       {/* Top Controls */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800">
-        <div className="flex items-center gap-2">
-          <Bookmark className="w-5 h-5 text-rose-500 fill-rose-500" />
-          <h2 className="text-base sm:text-lg font-bold text-slate-100">我的收藏夹</h2>
-          <span className="text-xs text-slate-500">（共 {favorites.length} 部）</span>
-        </div>
+        {onBack && (
+          <button
+            onClick={onBack}
+            className="self-start flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white text-xs font-medium border border-slate-800 transition-colors"
+          >
+            <ChevronLeft className="w-3.5 h-3.5" />
+            <span>返回发现</span>
+          </button>
+        )}
 
         {/* Right tools */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 sm:ml-auto">
           {/* Search inside favorites */}
           <div className="relative flex-1 sm:w-60">
             <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
@@ -358,6 +425,8 @@ export const FollowView: React.FC<FollowViewProps> = ({
             );
           })}
         </div>
+      )}
+        </>
       )}
     </div>
   );

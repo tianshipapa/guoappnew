@@ -78,8 +78,11 @@ export default async function handler(req, res) {
   } catch (error) {
     const message = error?.message || String(error || '未知错误');
     if (!res.headersSent) {
-      res.writeHead(200, {
+      // 与 Cloudflare 版保持一致：兜底一律非 2xx。回 200 会让播放器把错误 JSON
+      // 当成 m3u8 / 分片内容，既触发不了重试也看不出上游有问题。
+      res.writeHead(502, {
         'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store',
         'Access-Control-Allow-Origin': '*',
       });
     }

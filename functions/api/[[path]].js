@@ -37,8 +37,15 @@ async function runRouter(request) {
   // 不 await：流式响应要尽早把 Response 交出去，后续 write 继续往流里推
   const task = handleRequest(req, res, url).catch((error) => {
     const message = error?.message || String(error || '未知错误');
+    // 兜底必须是**非 2xx**：以前这里回 200 + JSON，hls.js 拿到 200 会把它当 m3u8
+    // 解析，报的是「清单解析失败」，既触发不了重试也看不出上游有问题。回 502
+    // 才能让播放器走「原地重连 → 换线路 → 重新解析」这条恢复链。
     try {
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.writeHead(502, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'Access-Control-Allow-Origin': '*',
+      });
       res.end(JSON.stringify({ ok: false, error: message }));
     } catch {
       /* 响应已经开始，无法再改状态码 */

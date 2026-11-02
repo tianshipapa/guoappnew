@@ -4,13 +4,15 @@ import {
   X,
   Play,
   Sparkles,
-  Sliders,
   HardDrive,
   Info,
-  Palette,
   Keyboard,
-  Shield,
   Trash2,
+  Bookmark,
+  History,
+  Layers,
+  Eye,
+  ChevronRight,
 } from 'lucide-react';
 import { UserSettings } from '../../types';
 
@@ -23,6 +25,12 @@ interface SettingsModalProps {
   favoritesCount: number;
   customSourcesCount: number;
   onClearStorage: () => void;
+  /** 收藏夹（内含播放历史）/ 自定义源 / 源显示 统一从设置进入 */
+  onOpenLibrary: (section: 'favorites' | 'history') => void;
+  onOpenCustomSources: () => void;
+  onOpenSourceVisibility: () => void;
+  visibleSourcesCount: number;
+  totalSourcesCount: number;
 }
 
 const ACCENT_COLORS = [
@@ -42,6 +50,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   favoritesCount,
   customSourcesCount,
   onClearStorage,
+  onOpenLibrary,
+  onOpenCustomSources,
+  onOpenSourceVisibility,
+  visibleSourcesCount,
+  totalSourcesCount,
 }) => {
   if (!isOpen) return null;
 
@@ -55,8 +68,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <Settings className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-bold text-slate-100">偏好设置与关于</h2>
-              <p className="text-xs text-slate-400">播放参数、画面调节与存储管理</p>
+              <h2 className="text-base font-bold text-slate-100">设置</h2>
+              <p className="text-xs text-slate-400">收藏夹、播放历史、站源与播放参数</p>
             </div>
           </div>
           <button
@@ -69,6 +82,82 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-4 space-y-6 text-xs sm:text-sm">
+          {/* Section: Library & Sources（收藏夹 / 播放历史 / 自定义源 / 源显示） */}
+          <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-4 space-y-2">
+            <h3 className="text-xs font-bold text-slate-200 flex items-center gap-1.5 pb-2 border-b border-slate-800">
+              <Bookmark className="w-4 h-4 text-emerald-400" />
+              <span>内容与站源</span>
+            </h3>
+
+            <button
+              type="button"
+              onClick={() => onOpenLibrary('favorites')}
+              className="w-full flex items-center gap-3 px-1 py-2 rounded-lg hover:bg-slate-800/60 transition-colors text-left"
+            >
+              <div className="p-2 rounded-lg bg-rose-500/15 text-rose-400 shrink-0">
+                <Bookmark className="w-4 h-4" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-slate-100">我的收藏夹</div>
+                <div className="text-[11px] text-slate-400">
+                  共 {favoritesCount} 部 · 支持续播、追剧状态管理
+                </div>
+              </div>
+              <ChevronRight className="w-4 h-4 text-slate-500 shrink-0" />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onOpenLibrary('history')}
+              className="w-full flex items-center gap-3 px-1 py-2 rounded-lg hover:bg-slate-800/60 transition-colors text-left"
+            >
+              <div className="p-2 rounded-lg bg-indigo-500/15 text-indigo-400 shrink-0">
+                <History className="w-4 h-4" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-slate-100">播放历史</div>
+                <div className="text-[11px] text-slate-400">
+                  共 {historyCount} 条 · 已并入收藏夹，按进度续播
+                </div>
+              </div>
+              <ChevronRight className="w-4 h-4 text-slate-500 shrink-0" />
+            </button>
+
+            <button
+              type="button"
+              onClick={onOpenCustomSources}
+              className="w-full flex items-center gap-3 px-1 py-2 rounded-lg hover:bg-slate-800/60 transition-colors text-left"
+            >
+              <div className="p-2 rounded-lg bg-amber-500/15 text-amber-400 shrink-0">
+                <Layers className="w-4 h-4" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-slate-100">自定义源</div>
+                <div className="text-[11px] text-slate-400">
+                  已添加 {customSourcesCount} 个 XBPQ / MacCMS 站源
+                </div>
+              </div>
+              <ChevronRight className="w-4 h-4 text-slate-500 shrink-0" />
+            </button>
+
+            <button
+              type="button"
+              onClick={onOpenSourceVisibility}
+              className="w-full flex items-center gap-3 px-1 py-2 rounded-lg hover:bg-slate-800/60 transition-colors text-left"
+            >
+              <div className="p-2 rounded-lg bg-sky-500/15 text-sky-400 shrink-0">
+                <Eye className="w-4 h-4" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-slate-100">源显示</div>
+                <div className="text-[11px] text-slate-400">
+                  当前显示 {visibleSourcesCount}/{totalSourcesCount} 个站源
+                </div>
+              </div>
+              <ChevronRight className="w-4 h-4 text-slate-500 shrink-0" />
+            </button>
+          </div>
+
           {/* Section: Playback */}
           <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-4 space-y-4">
             <h3 className="text-xs font-bold text-slate-200 flex items-center gap-1.5 pb-2 border-b border-slate-800">

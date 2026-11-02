@@ -1,5 +1,5 @@
 import React from 'react';
-import { Compass, Bookmark, History, Tv, Settings } from 'lucide-react';
+import { Compass, Bookmark, Tv, Settings } from 'lucide-react';
 
 interface BottomNavProps {
   activeView: string;
@@ -12,10 +12,10 @@ export const BottomNav: React.FC<BottomNavProps> = ({
   onSelectView,
   favoritesCount,
 }) => {
+  // 播放历史已并入收藏夹；自定义源 / 源显示收进设置，底栏只留四个主入口
   const tabs = [
     { id: 'explore', label: '发现', icon: Compass },
-    { id: 'favorites', label: '收藏夹', icon: Bookmark, badge: favoritesCount > 0 ? favoritesCount : null },
-    { id: 'history', label: '历史', icon: History },
+    { id: 'library', label: '收藏夹', icon: Bookmark, badge: favoritesCount > 0 ? favoritesCount : null },
     { id: 'live', label: '直播', icon: Tv },
     { id: 'settings', label: '设置', icon: Settings },
   ];

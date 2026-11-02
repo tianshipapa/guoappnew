@@ -1,14 +1,5 @@
 import React, { useState } from 'react';
-import {
-  Film,
-  Search,
-  Tv,
-  Bookmark,
-  History,
-  Settings,
-  Layers,
-  Eye,
-} from 'lucide-react';
+import { Film, Search, Tv, Settings } from 'lucide-react';
 import { SourceSite, UserSettings } from '../../types';
 import { CoreStatusPill } from './CoreStatusPill';
 import { SourcePicker } from '../sources/SourcePicker';
@@ -19,10 +10,7 @@ interface NavbarProps {
   onSelectSource: (sourceId: string) => void;
   onOpenSearch: (initialQuery?: string) => void;
   onOpenCustomSources: () => void;
-  onOpenSourceVisibility: () => void;
   onOpenLive: () => void;
-  onOpenFavorites: () => void;
-  onOpenHistory: () => void;
   onOpenSettings: () => void;
   settings: UserSettings;
   onUpdateSettings: (settings: UserSettings) => void;
@@ -36,10 +24,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onSelectSource,
   onOpenSearch,
   onOpenCustomSources,
-  onOpenSourceVisibility,
   onOpenLive,
-  onOpenFavorites,
-  onOpenHistory,
   onOpenSettings,
   settings,
   onUpdateSettings,
@@ -61,8 +46,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   const currentSourceObj = sources.find((s) => s.id === currentSource) || sources[0];
 
   return (
-    <header className="sticky top-0 z-40 bg-[#121624]/95 backdrop-blur border-b border-slate-800/80 px-3 md:px-6 py-2.5 transition-all">
-      <div className="max-w-7xl mx-auto flex items-center justify-between gap-2 md:gap-4">
+    <header className="sticky top-0 z-50 h-14 flex items-center bg-[#121624]/95 backdrop-blur border-b border-slate-800/80 px-3 md:px-6 transition-all">
+      <div className="w-full max-w-7xl mx-auto flex items-center justify-between gap-2 md:gap-4">
         {/* Brand & Source Dropdown */}
         <div className="flex items-center gap-2 md:gap-4 shrink-0">
           <button
@@ -137,24 +122,6 @@ export const Navbar: React.FC<NavbarProps> = ({
         {/* Action Shortcut Buttons */}
         <div className="hidden lg:flex items-center gap-1 text-xs">
           <button
-            onClick={onOpenCustomSources}
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition-colors"
-            title="管理自定义 MacCMS 或 API 站源"
-          >
-            <Layers className="w-3.5 h-3.5 text-rose-400" />
-            <span>自定义源</span>
-          </button>
-
-          <button
-            onClick={onOpenSourceVisibility}
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition-colors"
-            title="管理站源开启与显示"
-          >
-            <Eye className="w-3.5 h-3.5 text-sky-400" />
-            <span>源显示</span>
-          </button>
-
-          <button
             onClick={onOpenLive}
             className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg transition-colors ${
               activeView === 'live'
@@ -168,37 +135,12 @@ export const Navbar: React.FC<NavbarProps> = ({
           </button>
 
           <button
-            onClick={onOpenFavorites}
-            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg transition-colors ${
-              activeView === 'favorites'
-                ? 'bg-rose-600 text-white font-medium'
-                : 'text-slate-300 hover:text-white hover:bg-slate-800'
-            }`}
-            title="我的收藏夹（支持续播）"
-          >
-            <Bookmark className="w-3.5 h-3.5 text-emerald-400" />
-            <span>收藏夹</span>
-          </button>
-
-          <button
-            onClick={onOpenHistory}
-            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg transition-colors ${
-              activeView === 'history'
-                ? 'bg-rose-600 text-white font-medium'
-                : 'text-slate-300 hover:text-white hover:bg-slate-800'
-            }`}
-            title="观看记录"
-          >
-            <History className="w-3.5 h-3.5 text-indigo-400" />
-            <span>历史</span>
-          </button>
-
-          <button
             onClick={onOpenSettings}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
-            title="系统设置与关于"
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition-colors"
+            title="设置：收藏夹 / 播放历史 / 自定义源 / 源显示"
           >
-            <Settings className="w-4 h-4" />
+            <Settings className="w-3.5 h-3.5 text-slate-400" />
+            <span>设置</span>
           </button>
         </div>
 

@@ -25,6 +25,15 @@ export function toNodeRequest(request) {
   const headers = {};
   for (const [key, value] of request.headers) headers[key.toLowerCase()] = value;
 
+  // 边缘运行时并不保证带 x-forwarded-proto（Cloudflare Pages 的 *.pages.dev 上经常只有
+  // cf-visitor）。缺了它，router 的 originOf() 会退化成 http://，于是 m3u8 里被改写出来的
+  // 分片 / 子清单一律变成 http 地址；HTTPS 页面加载时浏览器按混合内容拦掉，播放器收到的
+  // 就是清一色的「网络流加载失败」。request.url 是运行时给出的真实绝对地址，
+  // 直接以它为权威来源补这两个头，比猜 xxx-forwarded-* 可靠得多。
+  const scheme = url.protocol.replace(':', '') || 'https';
+  headers['x-forwarded-proto'] = scheme;
+  if (!headers['host']) headers['host'] = url.host;
+
   return {
     method: request.method,
     url: `${url.pathname}${url.search}`,

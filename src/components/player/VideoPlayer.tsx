@@ -33,6 +33,24 @@ interface VideoPlayerProps {
 
 const PLAY_RATES = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0];
 
+/** hls.js 错误码 → 给用户看的中文原因（拿不到就按网络流中断处理）。 */
+function reasonOfHlsError(details?: string): string {
+  const map: Record<string, string> = {
+    manifestLoadError: '播放清单加载失败',
+    manifestLoadTimeOut: '播放清单加载超时',
+    manifestParsingError: '播放清单解析失败',
+    levelLoadError: '清晰度列表加载失败',
+    levelLoadTimeOut: '清晰度列表加载超时',
+    fragLoadError: '视频分片加载失败',
+    fragLoadTimeOut: '视频分片加载超时',
+    bufferStalledError: '缓冲停滞，网络过慢',
+    bufferAppendError: '视频数据写入失败',
+    bufferAppendNoSourceBuffer: '浏览器不支持该视频编码',
+    mediaError: '视频解码失败',
+  };
+  return map[String(details || '')] || '网络流加载中断';
+}
+
 export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   drama,
   episode,
@@ -58,11 +76,16 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [showControls, setShowControls] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState('');
+  const [errorDetail, setErrorDetail] = useState('');
   const [noticeMessage, setNoticeMessage] = useState('');
 
   // 播放线路（服务端解析出的多线路备选）
   const [resolved, setResolved] = useState<ResolvedSource | null>(null);
+  /** 这份解析结果属于哪一集：换集时旧地址必须先作废，避免串集 */
+  const [resolvedFor, setResolvedFor] = useState('');
   const [routeIndex, setRouteIndex] = useState(0);
+  /** 递增即强制重挂同一个地址（重新解析后 URL 可能一模一样） */
+  const [reloadToken, setReloadToken] = useState(0);
   const routes = resolved?.variants?.length ? resolved.variants : [];
 
   // Menus
@@ -71,6 +94,17 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
   const hideControlsTimerRef = useRef<any>(null);
   const lastSavedTimeRef = useRef<number>(0);
+  const noticeTimerRef = useRef<any>(null);
+  /** 断线重连 / 换线路 / 换解析结果时用来续上进度 */
+  const lastTimeRef = useRef<number>(initialPosition || 0);
+  /** hls.js 自身的网络 / 解码恢复次数（每次成功解析清单后清零） */
+  const netRetryRef = useRef(0);
+  const mediaRetryRef = useRef(0);
+  /** 本集已用掉的「换线路」「重新解析」次数，防止无限循环 */
+  const failoverRef = useRef({ routes: 0, resolve: 0 });
+  /** hls 回调 / 定时器里始终调用最新一次渲染的处理器 */
+  const fatalRef = useRef<(reason: string, detail?: string) => void>(() => {});
+  const refetchRef = useRef<() => Promise<void>>(async () => {});
 
   const resetHideTimer = () => {
     setShowControls(true);
@@ -80,19 +114,89 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }, 3500);
   };
 
+  /** 顶部轻提示（自动重连、切换线路等），不打断播放。 */
+  const showNotice = useCallback((message: string, ms = 4000) => {
+    setNoticeMessage(message);
+    if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = setTimeout(() => setNoticeMessage(''), ms);
+  }, []);
+
+  /** 重新向服务端解析一次直链（源站链接过期 / 代理 502 时唯一的解法）。 */
+  const refetchStream = useCallback(async () => {
+    try {
+      apiService.clearResolveCache();
+      const result = await apiService.resolveStream(drama, episode, {
+        adBlock: settings.adBlock,
+        force: true,
+      });
+      setResolved(result);
+      setResolvedFor(episode.id);
+      setRouteIndex(0);
+      setReloadToken((token) => token + 1);
+    } catch (error) {
+      setIsLoading(false);
+      setErrorMessage((error as Error).message || '该分集暂时无法播放');
+    }
+  }, [drama, episode, settings.adBlock]);
+
+  /**
+   * 致命错误的处理顺序：
+   * 依次换线路 → 重新解析地址 → 仍然失败才把错误交给用户。
+   */
+  const handleFatal = (reason: string, detail?: string) => {
+    setIsLoading(false);
+    const list = routes;
+    // 线路可能几十条，自动切换最多试 3 条，再多就该重新解析而不是空转
+    const maxAutoSwitch = Math.min(list.length - 1, 3);
+
+    if (list.length > 1 && failoverRef.current.routes < maxAutoSwitch) {
+      failoverRef.current.routes += 1;
+      const next = (routeIndex + 1) % list.length;
+      showNotice(`线路 ${routeIndex + 1} 不可用，自动切换线路 ${next + 1}/${list.length}…`);
+      setErrorMessage('');
+      setErrorDetail('');
+      setRouteIndex(next);
+      return;
+    }
+
+    if (failoverRef.current.resolve < 1) {
+      failoverRef.current.resolve += 1;
+      showNotice('播放地址可能已过期，正在重新解析…');
+      setErrorMessage('');
+      setErrorDetail('');
+      void refetchRef.current();
+      return;
+    }
+
+    console.warn('[player] 放弃恢复：', reason, detail || '');
+    setErrorDetail(detail || '');
+    setErrorMessage(reason);
+  };
+
+  useEffect(() => {
+    fatalRef.current = handleFatal;
+    refetchRef.current = refetchStream;
+  });
+
   /** 解析当前分集的播放地址（含广告过滤开关）。 */
   useEffect(() => {
     let mounted = true;
     setIsLoading(true);
     setErrorMessage('');
+    setErrorDetail('');
     setResolved(null);
+    setResolvedFor('');
     setRouteIndex(0);
+    setReloadToken(0);
+    failoverRef.current = { routes: 0, resolve: 0 };
+    lastTimeRef.current = initialPosition || 0;
 
     apiService
       .resolveStream(drama, episode, { adBlock: settings.adBlock })
       .then((result) => {
         if (!mounted) return;
         setResolved(result);
+        setResolvedFor(episode.id);
       })
       .catch((error: Error) => {
         if (!mounted) return;
@@ -105,7 +209,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     };
   }, [drama.id, drama.source, episode.id, settings.adBlock]);
 
-  const currentPlayUrl = routes[routeIndex]?.playUrl || resolved?.playUrl || '';
+  const currentPlayUrl =
+    resolvedFor === episode.id ? routes[routeIndex]?.playUrl || resolved?.playUrl || '' : '';
 
   // Mount Stream (HLS or standard MP4)
   const mountStream = useCallback(
@@ -115,82 +220,148 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
       setIsLoading(true);
       setErrorMessage('');
+      setErrorDetail('');
+      netRetryRef.current = 0;
+      mediaRetryRef.current = 0;
 
       if (hlsRef.current) {
-        hlsRef.current.destroy();
+        try {
+          hlsRef.current.destroy();
+        } catch (e) {}
         hlsRef.current = null;
       }
 
-      const isHlsUrl = url.includes('.m3u8') || url.includes('/api/hls');
+      const seekToResume = () => {
+        if (resumeTime > 1) {
+          try {
+            video.currentTime = resumeTime;
+          } catch (e) {}
+        }
+      };
+
+      const isHlsUrl = /\.m3u8/i.test(url) || url.includes('/api/hls');
 
       if (isHlsUrl && Hls.isSupported()) {
-        const hls = new Hls({ enableWorker: true, lowLatencyMode: true });
+        const hls = new Hls({
+          enableWorker: true,
+          // 点播不要开低延迟模式：激进的分片请求策略在弱网下更容易整段失败
+          lowLatencyMode: false,
+          backBufferLength: 60,
+          maxBufferLength: 30,
+          maxMaxBufferLength: 60,
+          manifestLoadingMaxRetry: 4,
+          manifestLoadingRetryDelay: 800,
+          manifestLoadingTimeOut: 30000,
+          levelLoadingMaxRetry: 6,
+          levelLoadingRetryDelay: 800,
+          levelLoadingTimeOut: 25000,
+          fragLoadingMaxRetry: 6,
+          fragLoadingRetryDelay: 800,
+          fragLoadingTimeOut: 35000,
+        });
         hlsRef.current = hls;
 
-        hls.loadSource(url);
-        hls.attachMedia(video);
+        hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+          try {
+            hls.loadSource(url);
+          } catch (e) {
+            fatalRef.current('网络流加载中断', '播放地址无效');
+          }
+        });
 
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          // 清单拉通 = 本次播放成功，恢复配额重新计算
+          failoverRef.current = { routes: 0, resolve: 0 };
+          netRetryRef.current = 0;
+          mediaRetryRef.current = 0;
           setIsLoading(false);
-          if (resumeTime > 0) {
-            try {
-              video.currentTime = resumeTime;
-            } catch (e) {}
-          }
-          video.play().catch(() => {});
+          seekToResume();
+          video.play().catch(() => setIsPlaying(false));
         });
 
         hls.on(Hls.Events.ERROR, (_event, data) => {
-          if (data.fatal) {
-            console.warn('Fatal HLS error, attempting failover route', data);
-            handleRouteFailover('网络流加载中断');
-          }
-        });
-      } else {
-        video.src = url;
-        video.load();
-        if (resumeTime > 0) {
-          video.addEventListener(
-            'loadedmetadata',
-            () => {
+          if (!data.fatal) return;
+          if (hlsRef.current !== hls) return;
+
+          // 1) 网络类致命错误：先在内部原地重连，不打扰用户
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR && netRetryRef.current < 3) {
+            netRetryRef.current += 1;
+            const attempt = netRetryRef.current;
+            showNotice(`网络抖动，正在第 ${attempt} 次自动重连…`);
+            setTimeout(() => {
+              if (hlsRef.current !== hls) return;
+              setIsLoading(true);
               try {
-                video.currentTime = resumeTime;
-              } catch (e) {}
-            },
-            { once: true }
-          );
-        }
-        video.play().catch(() => {});
+                hls.startLoad(lastTimeRef.current);
+              } catch (e) {
+                try {
+                  hls.loadSource(url);
+                } catch (err) {
+                  fatalRef.current('网络流加载中断', data.details);
+                }
+              }
+            }, 600 * attempt);
+            return;
+          }
+
+          // 2) 解码类错误：尝试恢复媒体管线
+          if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRetryRef.current < 2) {
+            mediaRetryRef.current += 1;
+            showNotice('解码异常，正在恢复播放…');
+            try {
+              if (mediaRetryRef.current > 1) hls.swapAudioCodec();
+              hls.recoverMediaError();
+              return;
+            } catch (e) {
+              /* 恢复失败，走下面的换线路逻辑 */
+            }
+          }
+
+          console.warn('[player] fatal HLS error', data);
+          fatalRef.current(reasonOfHlsError(data.details), data.details);
+        });
+
+        // 先挂载再拉清单：恢复流程（startLoad）依赖已挂载的 media
+        hls.attachMedia(video);
+        return;
       }
+
+      // mp4 / 其它直链
+      video.src = url;
+      video.load();
+      if (resumeTime > 1) {
+        video.addEventListener('loadedmetadata', seekToResume, { once: true });
+      }
+      video.play().catch(() => setIsPlaying(false));
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    []
+    [showNotice]
   );
 
-  // Auto failover route
-  const handleRouteFailover = (reason?: string) => {
-    const total = routes.length || 1;
-    const nextRoute = (routeIndex + 1) % total;
-    if (total > 1 && nextRoute !== routeIndex) {
-      setNoticeMessage(`当前线路加载失败，自动切换至线路 ${nextRoute + 1}/${total}…`);
-      setRouteIndex(nextRoute);
-      setTimeout(() => setNoticeMessage(''), 4000);
-    } else {
-      setErrorMessage(reason || '播放失败，请尝试刷新或切换站源');
-    }
-  };
-
-  // Switch episode or route
+  // Switch episode / route / 重新解析后重挂
   useEffect(() => {
     if (!currentPlayUrl) return;
-    mountStream(currentPlayUrl, initialPosition);
+    mountStream(currentPlayUrl, lastTimeRef.current);
     return () => {
       if (hlsRef.current) {
-        hlsRef.current.destroy();
+        try {
+          hlsRef.current.destroy();
+        } catch (e) {}
         hlsRef.current = null;
       }
     };
-  }, [currentPlayUrl, episode.id, mountStream]);
+  }, [currentPlayUrl, reloadToken, episode.id, mountStream]);
+
+  /** 网络恢复后自动把卡住的播放拉回来。 */
+  useEffect(() => {
+    const onOnline = () => {
+      if (!errorMessage) return;
+      showNotice('网络已恢复，正在重试播放…');
+      failoverRef.current = { routes: 0, resolve: 0 };
+      void refetchRef.current();
+    };
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
+  }, [errorMessage, showNotice]);
 
   // Video event listeners
   useEffect(() => {
@@ -199,10 +370,31 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
     video.playbackRate = settings.playbackRate;
 
+    let stallTimer: any = null;
+    const clearStall = () => {
+      if (stallTimer) {
+        clearTimeout(stallTimer);
+        stallTimer = null;
+      }
+    };
+
     const onPlay = () => setIsPlaying(true);
-    const onPause = () => setIsPlaying(false);
-    const onWaiting = () => setIsLoading(true);
+    const onPause = () => {
+      setIsPlaying(false);
+      clearStall();
+    };
+    const onWaiting = () => {
+      setIsLoading(true);
+      clearStall();
+      // 卡住 25s 还没缓冲出画面 → 认为这条流已废，交给重连逻辑
+      stallTimer = setTimeout(() => {
+        if (video.readyState < 3) {
+          fatalRef.current('网络流加载超时', '长时间无数据');
+        }
+      }, 25000);
+    };
     const onPlaying = () => {
+      clearStall();
       setIsLoading(false);
       setIsPlaying(true);
     };
@@ -211,6 +403,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       const pos = video.currentTime;
       setCurrentTime(pos);
       setDuration(video.duration || 0);
+      if (video.readyState >= 3) clearStall();
+      if (pos > 0) lastTimeRef.current = pos;
 
       const now = Date.now();
       if (now - lastSavedTimeRef.current > 5000) {
@@ -232,7 +426,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
     const onError = () => {
       setIsLoading(false);
-      handleRouteFailover('线路加载错误');
+      // 浏览器原生错误（mp4 直链 / 解码）——交给统一恢复流程
+      fatalRef.current('网络流加载中断', video.error?.message || '');
     };
 
     video.addEventListener('play', onPlay);
@@ -244,6 +439,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     video.addEventListener('error', onError);
 
     return () => {
+      clearStall();
       video.removeEventListener('play', onPlay);
       video.removeEventListener('pause', onPause);
       video.removeEventListener('waiting', onWaiting);
@@ -443,20 +639,29 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 p-4 text-center z-30">
           <AlertCircle className="w-10 h-10 text-rose-500 mb-2" />
           <h4 className="text-sm font-semibold text-slate-200">{errorMessage}</h4>
+          <p className="text-[11px] text-slate-500 mt-1 max-w-md">
+            {errorDetail ? `原因：${errorDetail}` : '已自动尝试重连与切换线路，仍无法播放'}
+          </p>
           <div className="flex items-center gap-2 mt-4">
             <button
               onClick={() => {
-                apiService.clearResolveCache();
-                if (currentPlayUrl) mountStream(currentPlayUrl, currentTime);
+                failoverRef.current = { routes: 0, resolve: 0 };
+                showNotice('正在重新解析播放地址…');
+                void refetchStream();
               }}
               className="px-3.5 py-1.5 rounded-lg bg-rose-600 text-white text-xs font-medium hover:bg-rose-500 flex items-center gap-1.5"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              <span>原线路重试</span>
+              <span>重新加载</span>
             </button>
             {routes.length > 1 && (
               <button
-                onClick={() => handleRouteFailover()}
+                onClick={() => {
+                  failoverRef.current.routes = 0;
+                  setErrorMessage('');
+                  setErrorDetail('');
+                  setRouteIndex((index) => (index + 1) % routes.length);
+                }}
                 className="px-3.5 py-1.5 rounded-lg bg-slate-800 text-slate-200 text-xs font-medium hover:bg-slate-700 border border-slate-700"
               >
                 切换下一线路

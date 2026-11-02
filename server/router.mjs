@@ -553,7 +553,21 @@ async function readBody(req) {
 
 function originOf(req) {
   const host = req.headers['x-forwarded-host'] || req.headers.host || '127.0.0.1';
-  const proto = req.headers['x-forwarded-proto'] || 'http';
+  // 协议要多留几手：Cloudflare Pages / workers.dev 这类边缘宿主常常只给 cf-visitor，
+  // 不给 x-forwarded-proto。一旦漏判成 http，m3u8 里改写出的分片地址就全是 http，
+  // HTTPS 页面加载时会被浏览器按混合内容拦掉——表现正是「网络流加载失败」。
+  let proto = String(req.headers['x-forwarded-proto'] || '')
+    .split(',')[0]
+    .trim()
+    .toLowerCase();
+  if (proto !== 'http' && proto !== 'https') {
+    const visitor = String(req.headers['cf-visitor'] || '');
+    if (/"scheme"\s*:\s*"https"/i.test(visitor)) proto = 'https';
+    else if (String(req.headers['x-forwarded-ssl'] || '').toLowerCase() === 'on') proto = 'https';
+    else if (/:443$/.test(host)) proto = 'https';
+    else if (/:\d+$/.test(host)) proto = 'http'; // 带自定义端口：本地调试 / 自建服务
+    else proto = 'https'; // 公网裸域名
+  }
   return `${proto}://${host}`;
 }
 
@@ -603,12 +617,42 @@ export async function handleRequest(req, res, url) {
     const referer = query.get('r') || target;
     const headers = decodeHeaders(query.get('h'));
     const adblock = query.get('ad') !== '0';
-    const { text, url: finalURL } = await fetchText(target, {
-      referer,
-      headers,
-      timeout: 25000,
-    });
-    const cleaned = adCleaned(text.replace(/\r\n/g, '\n'), finalURL, adblock);
+
+    // 采集站 CDN 抖动很常见。清单拿不到（超时 / 5xx / 返回错误页）就重试，
+    // 千万别把错误页当 m3u8 塞给播放器——那会直接变成「网络流加载中断」。
+    // 单次 10s、最多 2 次，总耗时控制在播放器 30s 超时以内。
+    let manifest = '';
+    let finalURL = target;
+    let lastError = '';
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const result = await fetchText(target, {
+          referer,
+          headers,
+          timeout: 10000,
+        });
+        const text = String(result.text || '');
+        if (Number(result.status) >= 400) {
+          lastError = `上游返回 ${result.status}`;
+        } else if (!text.includes('#EXTM3U')) {
+          lastError = '上游返回的不是 m3u8 清单';
+        } else {
+          manifest = text;
+          finalURL = result.url || target;
+          lastError = '';
+          break;
+        }
+      } catch (error) {
+        lastError = error?.message || '播放清单抓取失败';
+      }
+      if (attempt < 1) await new Promise((resolve) => setTimeout(resolve, 350));
+    }
+
+    if (!manifest) {
+      return sendJSON(res, 502, { ok: false, error: lastError || '播放清单加载失败' });
+    }
+
+    const cleaned = adCleaned(manifest.replace(/\r\n/g, '\n'), finalURL, adblock);
     const rewritten = rewriteManifest(cleaned, finalURL, originOf(req), { referer, headers });
     res.writeHead(200, {
       'Content-Type': 'application/vnd.apple.mpegurl; charset=utf-8',
@@ -624,7 +668,42 @@ export async function handleRequest(req, res, url) {
     const referer = query.get('r') || '';
     const headers = decodeHeaders(query.get('h'));
     const range = req.headers.range || '';
-    const upstream = await fetchBinary(target, { referer, headers, range });
+
+    // 分片同样重试：5xx / 连接被重置时先重取响应头，还没开始传输所以代价很低。
+    // 每次 15s、最多 2 次，避免超过播放器的分片超时。
+    let upstream = null;
+    let lastError = '';
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const result = await fetchBinary(target, { referer, headers, range, timeout: 15000 });
+        if (Number(result.status) >= 500) {
+          lastError = `上游返回 ${result.status}`;
+          if (result.body) {
+            try {
+              await result.body.cancel();
+            } catch {
+              /* 忽略取消失败 */
+            }
+          }
+        } else {
+          upstream = result;
+          break;
+        }
+      } catch (error) {
+        lastError = error?.message || '分片抓取失败';
+      }
+      if (attempt < 1) await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+
+    if (!upstream) {
+      res.writeHead(502, {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'Access-Control-Allow-Origin': '*',
+      });
+      return res.end(lastError || '分片加载失败');
+    }
+
     const outHeaders = {
       'Content-Type': upstream.headers.get('content-type') || 'application/octet-stream',
       'Access-Control-Allow-Origin': '*',
@@ -728,8 +807,14 @@ export async function handleRequest(req, res, url) {
       }
     }
     if (!body) return sendJSON(res, 200, { ok: true, backend: libraryBackend(), data: await readLibrary() });
-    const data = await applyLibrary(body);
-    return sendJSON(res, 200, { ok: true, data });
+    // 参数不合法（比如 list 不是 history/favorites）属于请求问题，回 400；
+    // 不接住就会冒到外层兜底变成 502，看起来像服务挂了。
+    try {
+      const data = await applyLibrary(body);
+      return sendJSON(res, 200, { ok: true, data });
+    } catch (error) {
+      return sendJSON(res, 400, { ok: false, error: error?.message || '收藏夹写入失败' });
+    }
   }
 
   // GET 回退：某些静态托管 / 反代会拦掉 POST（Cloudflare Pages 对静态资源

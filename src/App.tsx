@@ -5,7 +5,6 @@ import { CategoryBar } from './components/explore/CategoryBar';
 import { FilterBar } from './components/explore/FilterBar';
 import { DramaCard } from './components/explore/DramaCard';
 import { DramaDetailView } from './components/detail/DramaDetailView';
-import { HistoryView } from './components/library/HistoryView';
 import { FollowView } from './components/library/FollowView';
 import { LiveView } from './components/live/LiveView';
 import { SearchModal } from './components/search/SearchModal';
@@ -57,9 +56,9 @@ export const App: React.FC = () => {
   const [currentSource, setCurrentSource] = useState<string>(loadLastActiveSource);
 
   // Active view & navigation
-  const [activeView, setActiveView] = useState<'explore' | 'favorites' | 'history' | 'live'>(
-    'explore'
-  );
+  const [activeView, setActiveView] = useState<'explore' | 'library' | 'live'>('explore');
+  /** 收藏夹内的分页：收藏 / 播放历史（历史已并入收藏夹） */
+  const [librarySection, setLibrarySection] = useState<'favorites' | 'history'>('favorites');
   const [selectedDrama, setSelectedDrama] = useState<Drama | null>(null);
   const [resumeIndex, setResumeIndex] = useState<number | undefined>(undefined);
   const [resumePosition, setResumePosition] = useState<number | undefined>(undefined);
@@ -397,18 +396,9 @@ export const App: React.FC = () => {
         onSelectSource={handleSelectSource}
         onOpenSearch={handleOpenSearch}
         onOpenCustomSources={() => setIsCustomSourcesOpen(true)}
-        onOpenSourceVisibility={() => setIsVisibilityOpen(true)}
         onOpenLive={() => {
           setSelectedDrama(null);
           setActiveView('live');
-        }}
-        onOpenFavorites={() => {
-          setSelectedDrama(null);
-          setActiveView('favorites');
-        }}
-        onOpenHistory={() => {
-          setSelectedDrama(null);
-          setActiveView('history');
         }}
         onOpenSettings={() => setIsSettingsOpen(true)}
         settings={settings}
@@ -447,22 +437,19 @@ export const App: React.FC = () => {
         ) : activeView === 'live' ? (
           /* Live Stream View */
           <LiveView />
-        ) : activeView === 'favorites' ? (
-          /* Favorites / Follow View */
+        ) : activeView === 'library' ? (
+          /* 收藏夹（含播放历史分页） */
           <FollowView
+            key={librarySection}
             favorites={favorites}
             history={history}
+            initialSection={librarySection}
+            onBack={() => setActiveView('explore')}
             onSelectDrama={(d, idx, pos) => handleSelectDrama(d, idx, pos)}
             onDeleteItems={handleDeleteFavorites}
             onUpdateStatus={handleUpdateFavoriteStatus}
-          />
-        ) : activeView === 'history' ? (
-          /* Watch History View */
-          <HistoryView
-            history={history}
-            onSelectDrama={(d, idx, pos) => handleSelectDrama(d, idx, pos)}
-            onDeleteItems={handleDeleteHistory}
-            onClearAll={handleClearAllHistory}
+            onDeleteHistory={handleDeleteHistory}
+            onClearHistory={handleClearAllHistory}
           />
         ) : (
           /* Explore / Catalog View */
@@ -572,7 +559,12 @@ export const App: React.FC = () => {
         <BottomNav
           activeView={activeView}
           onSelectView={(v) => {
+            if (v === 'settings') {
+              setIsSettingsOpen(true);
+              return;
+            }
             setSelectedDrama(null);
+            if (v === 'library') setLibrarySection('favorites');
             setActiveView(v as any);
           }}
           favoritesCount={favorites.length}
@@ -627,6 +619,22 @@ export const App: React.FC = () => {
         favoritesCount={favorites.length}
         customSourcesCount={customSources.length}
         onClearStorage={handleClearStorage}
+        visibleSourcesCount={visibleSources.length}
+        totalSourcesCount={allSources.length}
+        onOpenLibrary={(section) => {
+          setIsSettingsOpen(false);
+          setSelectedDrama(null);
+          setLibrarySection(section);
+          setActiveView('library');
+        }}
+        onOpenCustomSources={() => {
+          setIsSettingsOpen(false);
+          setIsCustomSourcesOpen(true);
+        }}
+        onOpenSourceVisibility={() => {
+          setIsSettingsOpen(false);
+          setIsVisibilityOpen(true);
+        }}
       />
     </div>
   );

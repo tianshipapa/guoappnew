@@ -52,7 +52,11 @@ export function decodeHeaders(token) {
  */
 export function rewriteManifest(text, baseURL, origin, options = {}) {
   const { referer = '', headers = {} } = options;
-  const segment = (address) => proxyURL(origin, 'media', { url: address, referer, headers });
+  // 子清单（多码率 m3u8）也走 /api/hls：那边会校验 #EXTM3U、失败重试，
+  // 直接把错误页当清单转发会让播放器整条线路挂掉。
+  const kindOf = (address) => (/\.m3u8(\?|#|$)/i.test(address) ? 'hls' : 'media');
+  const segment = (address) =>
+    proxyURL(origin, kindOf(address), { url: address, referer, headers });
   const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
 
   return lines
