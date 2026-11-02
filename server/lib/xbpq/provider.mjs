@@ -3,7 +3,7 @@
 // 数据流：规则字段（数组/标题/链接/…）→ 抓页 → 截取 → 统一条目结构。
 // 前端只拿到归一化后的 JSON，全部跨域抓取都在服务端完成。
 
-import { fetchText, absoluteURL, isMediaURL, hostOrigin } from '../http.mjs';
+import { fetchText, absoluteURL, isMediaURL, hostOrigin, describeStatus } from '../http.mjs';
 import { parseHTML, renderHTML, cleanText, descendants, textContent } from '../html.mjs';
 import {
   maccmsPlayerURL,
@@ -33,6 +33,13 @@ export function splitSpec(raw) {
   return { address, method: '', body: '' };
 }
 
+/**
+ * 抓一页规则地址，返回 { text, url, status }。
+ *
+ * 关键点（对齐 provider_huangguo.go 的 fetchProviderText / catalogResponseError）：
+ * 上游 4xx/5xx 的**错误页绝不能被当成列表页解析**——那会让「站点返回 403/522」
+ * 伪装成「数组没有匹配到站点结构」，把排查方向带偏，也是线上「加载失败」的主因。
+ */
 async function fetchRulePage(rule, raw, referer) {
   const { address, method, body } = splitSpec(raw);
   if (!address) throw new Error('规则地址为空');
@@ -44,8 +51,59 @@ async function fetchRulePage(rule, raw, referer) {
     body,
     timeout: 20000,
   });
-  return result.text;
+  const status = Number(result.status) || 200;
+  const text = String(result.text || '');
+  const finalURL = result.url || address;
+
+  if (status >= 400) {
+    const preview = text.replace(/\s+/g, ' ').trim().slice(0, 60);
+    throw new Error(`${describeStatus(status, address)}${preview ? `：${preview}` : ''}`);
+  }
+  if (!text.trim()) throw new Error(`站点返回空页面（HTTP ${status}）`);
+
+  // 200 也可能是反爬/JS 验证页：不拦下来，后面只会报「数组没匹配到」。
+  const blocked = blockedPageReason(text);
+  if (blocked) {
+    throw new Error(`站点返回验证/拦截页（${blocked}），非正常列表页；建议换源或在本地运行`);
+  }
+  return { text, url: finalURL, status };
 }
+
+/** 识别反爬/挑战页特征（Cloudflare、宝塔、简陋 JS 跳转等）。 */
+function blockedPageReason(body) {
+  const text = String(body || '');
+  const head = text.slice(0, 6000);
+  const signature = [
+    [/just a moment/i, 'Cloudflare 人机验证'],
+    [/attention required.*cloudflare|cf-error-details|error code:?\s*5\d\d/i, 'Cloudflare 网关错误页'],
+    [/idc_search_browser|document\.cookie\s*=\s*"idc_/i, '站点搜索验证'],
+    [/请开启\s*JavaScript|requires javascript|enable javascript and cookies/i, '需要 JavaScript'],
+    [/<title>\s*(?:403|404|500|502|503|访问受限|拒绝访问|网站暂时无法访问)/i, '站点错误页'],
+  ];
+  for (const [pattern, label] of signature) {
+    if (pattern.test(head)) return label;
+  }
+  // 极短且没有任何列表容器的正文：基本不是一页正常 HTML
+  if (head.length < 400 && !/<(?:li|a|div|p|ul|dl|table)[\s>]/i.test(head)) {
+    return `正文仅 ${head.length} 字节，不像完整页面`;
+  }
+  return '';
+}
+
+/** 0 条目时的现场诊断：页面多大、有哪些容器、是不是跑错了地址。 */
+function listDiagnostics(body, pageURL, status) {
+  const probe = (pattern) => (String(body || '').match(pattern) || []).length;
+  const parts = [
+    `页面 ${(String(body || '').length / 1024).toFixed(1)}KB`,
+    `HTTP ${status}`,
+    `<li> ${probe(/<li[\s>]/gi)}`,
+    `<a> ${probe(/<a\s/gi)}`,
+    `module-item ${probe(/module-item/gi)}`,
+    `stui-vodlist ${probe(/stui-vodlist/gi)}`,
+  ];
+  return `${parts.join(' · ')} · 来源 ${pageURL}`;
+}
+
 
 /** 填占位符 + 相对转绝对；域名不一致时按站源当前地址重写 host。 */
 export function renderURL(template, base, values) {
@@ -121,8 +179,11 @@ function linkFromID(base, id) {
 /** 数组截取：json / 选择器 / 截取串三路，失败再走通用容器兜底。 */
 async function extractItems(rule, base, pageURL, prefix) {
   // 二次截取会把页面缩到子区域，后续所有提取都基于子区域，所以这里必须可变
-  let body = await fetchRulePage(rule, pageURL, base + '/');
-  if (!body.trim()) throw new Error('站点返回空页面');
+  const page = await fetchRulePage(rule, pageURL, base + '/');
+  let body = page.text;
+  // 站点常把裸域 301 到 www / 换域名：后续相对链接要按最终地址补全
+  const effectiveURL = page.url || pageURL;
+  const status = page.status;
 
   const arrayPattern = rule.field(`${prefix}数组`, '数组');
 
@@ -134,25 +195,26 @@ async function extractItems(rule, base, pageURL, prefix) {
       if (scoped) source = scoped;
     }
     const items = jsonArrayItems(source, arrayPattern).map((text) => ({ text, node: null, doc: null }));
-    if (items.length) return items;
+    if (items.length) return { items, pageURL: effectiveURL, status, body };
   }
 
   if (!arrayPattern) {
     const jsonItems = fallbackJSONList(body);
-    if (jsonItems.length) return jsonItems;
-    return [];
+    if (jsonItems.length) return { items: jsonItems, pageURL: effectiveURL, status, body };
+    return { items: [], pageURL: effectiveURL, status, body };
   }
 
   let document = parseHTML(body);
 
   if (arrayPattern.startsWith('p:') || arrayPattern.startsWith('jsoup:')) {
     const selector = parseSelector(arrayPattern);
-    if (!selector) return [];
-    return selectorNodes(document, selector).map((node) => ({
+    if (!selector) return { items: [], pageURL: effectiveURL, status, body };
+    const nodes = selectorNodes(document, selector).map((node) => ({
       text: renderHTML(node),
       node,
       doc: document,
     }));
+    return { items: nodes, pageURL: effectiveURL, status, body };
   }
 
   const region = rule.field(`${prefix}二次截取`, '二次截取');
@@ -185,9 +247,9 @@ async function extractItems(rule, base, pageURL, prefix) {
 
   if (items.length === 0) {
     const jsonItems = fallbackJSONList(body);
-    if (jsonItems.length) return jsonItems;
+    if (jsonItems.length) return { items: jsonItems, pageURL: effectiveURL, status, body };
   }
-  return items;
+  return { items, pageURL: effectiveURL, status, body };
 }
 
 /** 页面里嵌 MacCMS 风格 JSON（vod_name/vod_id…）时直接解析。 */
@@ -268,8 +330,9 @@ function categoryURL(rule, base, categoryId, page) {
 function arrayMismatchHint(rule, prefix) {
   let pattern = (rule.field(`${prefix}数组`, '数组') || '').trim();
   if (!pattern) return `规则没有「${prefix}数组」字段`;
-  pattern = cleanText(pattern);
-  if (pattern.length > 80) pattern = pattern.slice(0, 80) + '…';
+  // 注意：这里绝对不能用 cleanText——截取串本身就是 HTML 标签/属性，
+  // 去标签后会整条变空，线上就出现过「数组「」没有匹配到站点结构」这种没法读的报错。
+  if (pattern.length > 90) pattern = pattern.slice(0, 90) + '…';
   return `数组「${pattern}」没有匹配到站点结构`;
 }
 
@@ -311,9 +374,13 @@ export async function xbpqCatalog({ rule, base, source, category = '', page = 1 
   if (!pageURL) throw new Error('规则缺少分类url');
   const prefix = categoryId ? '列表' : '';
 
-  const items = await extractItems(rule, base, pageURL, prefix);
+  const listing = await extractItems(rule, base, pageURL, prefix);
+  const items = listing.items;
   if (items.length === 0) {
-    throw new Error(`规则未抽取到列表条目（${arrayMismatchHint(rule, prefix)}）`);
+    const hint = arrayMismatchHint(rule, prefix);
+    const site = listDiagnostics(listing.body, listing.pageURL, listing.status);
+    // 分类 id 猜错 / 站点换模板时，先把「页面里其实有 200 个 <li>」这类事实说清楚
+    throw new Error(`规则未抽取到列表条目（${hint}；${site}）`);
   }
 
   const titlePattern = rule.field('标题', `${prefix}标题`);
@@ -321,13 +388,15 @@ export async function xbpqCatalog({ rule, base, source, category = '', page = 1 
   const picturePattern = rule.field(`${prefix}图片`, '图片', '主图', '封面图');
   const remarkPattern = rule.field('副标题', `${prefix}副标题`, '备注');
   const numericID = Boolean(rule.field('详情url', '详情页url'));
+  // 站点 301 换域后，相对链接必须按最终地址补全，否则封面/详情会拼到旧域名上
+  const linkBase = listing.pageURL || pageURL;
 
   const dramas = [];
   for (const item of items) {
     const title = cleanText(itemField(item, titlePattern));
-    const link = joinLink(pageURL, itemField(item, linkPattern));
+    const link = joinLink(linkBase, itemField(item, linkPattern));
     if (!title || !link || !/^http/i.test(link)) continue;
-    const cover = joinLink(pageURL, itemField(item, picturePattern));
+    const cover = joinLink(linkBase, itemField(item, picturePattern));
     const remark = cleanText(itemField(item, remarkPattern));
     dramas.push(
       toDrama({
@@ -360,18 +429,25 @@ export async function xbpqSearch({ rule, base, source, query, page = 1 }) {
     if (method && payload.includes('{wd}')) payload = payload.split('{wd}').join(query);
     const spec = method ? `${pageURL};${method};${payload}` : pageURL;
 
-    let items = [];
+    let extracted = { items: [], pageURL, body: '' };
     let fetchError = null;
     try {
-      items = await extractItems(rule, base, spec, '搜索');
-      if (items.length === 0) items = await extractItems(rule, base, spec, '');
+      extracted = await extractItems(rule, base, spec, '搜索');
+      if (extracted.items.length === 0) extracted = await extractItems(rule, base, spec, '');
     } catch (error) {
       fetchError = error;
     }
+    const items = extracted.items;
     if (items.length === 0) {
       lastError = fetchError
         ? new Error(`搜索页抓取失败：${fetchError.message}`)
-        : new Error(`搜索页未抽取到结果（${arrayMismatchHint(rule, '搜索')}）`);
+        : new Error(
+            `搜索页未抽取到结果（${arrayMismatchHint(rule, '搜索')}；${listDiagnostics(
+              extracted.body,
+              extracted.pageURL,
+              extracted.status
+            )}）`
+          );
       continue;
     }
 
@@ -402,29 +478,37 @@ export async function xbpqSearch({ rule, base, source, query, page = 1 }) {
   throw lastError || new Error('搜索规则不可用');
 }
 
+/** 规则没写/写错播放数组时的通用分集容器兜底（按皮肤覆盖概率排序）。 */
+const FALLBACK_PLAY_ARRAYS = [
+  'id="ewave-playlist&&</ul>', // ewave / fed 二开皮肤（静好派一类）
+  'class="ewave-playlist-content&&</ul>',
+  '<ul class="stui-content__playlist&&</ul>',
+  '<ul class="myui-content__list&&</ul>',
+  'class="module-play-list-content&&</div>',
+];
+
 /** 解析播放串：播放数组 → 线路数组 → $$$ 分线路 → # 分集 → 标题$链接。 */
 export function parseEpisodes(body, pageURL, rule) {
   const arrayPattern = rule.field('播放数组');
   if (!arrayPattern) return { best: [], routes: [] };
 
-  let raw = '';
+  // 线路数组与播放数组都可能「锚点沾边但截错」：像 ewave/fed 皮肤里
+  // class="playlist-tab-box" 会命中 class="playlist&&</div>，截出来的是线路按钮，
+  // 里面一个分集都没有。所以两个来源都试，取真正能切出分集的那个。
+  const sources = [];
   const routeArray = rule.field('线路数组');
   if (routeArray) {
     const segments = list(body, routeArray);
-    if (segments.length) raw = segments.join('$$$');
+    if (segments.length) sources.push(segments.join('$$$'));
   }
-  if (!raw) raw = cutOnce(body, arrayPattern);
-  if (!raw) return { best: [], routes: [] };
+  const direct = cutOnce(body, arrayPattern);
+  if (direct) sources.push(direct);
+  if (!sources.length) return { best: [], routes: [] };
 
-  raw = raw.replace(/\r\n/g, '#').split('\\/').join('/');
   let listSplit = rule.field('播放列表') || '#';
   if (listSplit === '&&') listSplit = '#';
   const titlePattern = rule.field('播放标题');
   const linkPattern = rule.field('播放链接');
-
-  const rawGroups = raw.split('$$$');
-  let best = [];
-  const routes = [];
 
   const parseItems = (group, separator) => {
     const entries = [];
@@ -448,7 +532,8 @@ export function parseEpisodes(body, pageURL, rule) {
       }
       if (address.startsWith('$')) continue;
       address = normalizePlaybackURL(address.trim());
-      name = cleanText(name);
+      // 播放串里的换行会被统一换成 # 当分隔符，标题首尾可能残留分隔符
+      name = cleanText(name).replace(/^[#\s]+/, '').trim();
       if (!name && address.includes('://')) name = `第${entries.length + 1}集`;
       if (!name || !address) continue;
       entries.push({ title: name, url: address });
@@ -456,18 +541,46 @@ export function parseEpisodes(body, pageURL, rule) {
     return entries;
   };
 
-  for (const rawGroup of rawGroups) {
-    const group = rawGroup.trim();
-    if (!group) continue;
-    let entries = parseItems(group, listSplit);
-    // 分隔符自适应：只切出 ≤1 段但段内有 ≥2 个 href 时，改按 <a 切
-    if (entries.length <= 1 && (group.match(/href=/g) || []).length >= 2) {
-      const alternate = parseItems(group, '<a');
-      if (alternate.length > entries.length) entries = alternate;
+  const parseRaw = (rawText) => {
+    const normalized = String(rawText || '').replace(/\r\n/g, '#').split('\\/').join('/');
+    const rawGroups = normalized.split('$$$');
+    let best = [];
+    const routes = [];
+    for (const rawGroup of rawGroups) {
+      const group = rawGroup.trim();
+      if (!group) continue;
+      let entries = parseItems(group, listSplit);
+      // 分隔符自适应：只切出 ≤1 段但段内有 ≥2 个 href 时，改按 <a 切
+      if (entries.length <= 1 && (group.match(/href=/g) || []).length >= 2) {
+        const alternate = parseItems(group, '<a');
+        if (alternate.length > entries.length) entries = alternate;
+      }
+      if (entries.length > best.length) best = entries;
+      if (entries.length) routes.push(entries);
     }
-    if (entries.length > best.length) best = entries;
-    if (entries.length) routes.push(entries);
+    return { best, routes };
+  };
+
+  let parsed = { best: [], routes: [] };
+  const tryRaw = (rawText) => {
+    if (!rawText) return;
+    const result = parseRaw(rawText);
+    if (result.best.length > parsed.best.length) parsed = result;
+  };
+  for (const candidate of sources) {
+    tryRaw(candidate);
+    if (parsed.best.length > 0) break;
   }
+  // 规则里的播放数组/线路数组双双落空时，再按皮肤通用容器兜一层
+  // （ewave/fed、stui、myui、mxone 四代模板占了采集站绝大多数）。
+  if (parsed.best.length === 0) {
+    for (const pattern of FALLBACK_PLAY_ARRAYS) {
+      tryRaw(cutOnce(body, pattern));
+      if (parsed.best.length > 0) break;
+    }
+  }
+  if (parsed.best.length === 0) return { best: [], routes: [] };
+  const { best, routes } = parsed;
 
   const absolutize = (entry) => {
     let link = entry.url;
@@ -517,7 +630,9 @@ export async function xbpqDetail({ rule, base, source, sourceId }) {
   }
   if (!pageURL) throw new Error('无法定位详情页地址');
 
-  const body = await fetchRulePage(rule, pageURL, base + '/');
+  const page = await fetchRulePage(rule, pageURL, base + '/');
+  const body = page.text;
+  const detailURL = page.url || pageURL;
   const document = parseHTML(body);
   const item = { text: body, node: null, doc: document };
 
@@ -531,7 +646,12 @@ export async function xbpqDetail({ rule, base, source, sourceId }) {
   };
 
   let title = pick(rule.field('影片名称'), rule.field('name'));
-  if (!title) title = maccmsDetailTitle(document);
+  if (!title) {
+    title = maccmsDetailTitle(document);
+    // 详情页标题常是「《片名》西瓜在线电影」这种：片名在书名号里，后缀是站点栏目
+    const bracket = /《([^》]{2,40})》/.exec(title || '');
+    if (bracket && title.length > bracket[1].length + 4) title = bracket[1];
+  }
   if (!title) {
     const heading = descendants(document).find((node) => node.tag === 'h1' || node.tag === 'h2');
     if (heading) {
@@ -563,12 +683,22 @@ export async function xbpqDetail({ rule, base, source, sourceId }) {
   if (actor) tags.push(`主演:${actor}`);
   drama.tags = tags;
 
-  const { best, routes } = parseEpisodes(body, pageURL, rule);
-  if (best.length === 0) throw new Error('规则未解析到分集');
+  const { best, routes } = parseEpisodes(body, detailURL, rule);
+  if (best.length === 0) {
+    // 分集解析失败时把「规则给的播放数组/线路数组」带出来，别只说一句未解析到分集
+    const playArray = (rule.field('播放数组') || '').trim();
+    const routeArray = (rule.field('线路数组') || '').trim();
+    const detail = [
+      playArray ? `播放数组「${playArray.slice(0, 70)}${playArray.length > 70 ? '…' : ''}」` : '规则没有「播放数组」',
+      routeArray ? `线路数组「${routeArray.slice(0, 50)}${routeArray.length > 50 ? '…' : ''}」` : '',
+      `详情页 ${(body.length / 1024).toFixed(1)}KB`,
+    ].filter(Boolean);
+    throw new Error(`规则未解析到分集（${detail.join(' · ')}）`);
+  }
 
   const episodes = [];
   best.forEach((entry, index) => {
-    const link = joinLink(pageURL, entry.url);
+    const link = joinLink(detailURL, entry.url);
     if (!link) return;
     episodes.push({
       index: episodes.length + 1,
@@ -576,7 +706,7 @@ export async function xbpqDetail({ rule, base, source, sourceId }) {
       pageUrl: link,
       videoUrl: link,
       referer: base + '/',
-      routes: alternateRoutes(routes, index, best.length, entry, link, pageURL),
+      routes: alternateRoutes(routes, index, best.length, entry, link, detailURL),
     });
   });
   if (episodes.length === 0) throw new Error('规则未解析到可播放分集');
@@ -611,20 +741,21 @@ function jumpCandidates(body, jump) {
 /** 单个播放页取直链：跳转模板 → 标准 player_data → MacCMS 嗅探。 */
 async function resolveOne(pageURL, referer, rule) {
   const playHeaders = rule.playHeaderSet;
-  const body = await fetchRulePage(rule, pageURL, referer);
+  const page = await fetchRulePage(rule, pageURL, referer);
+  const body = page.text;
   const mediaReferer = rule.playReferer || pageURL;
 
   const jump = rule.field('跳转播放链接');
   if (jump) {
     for (let candidate of jumpCandidates(body, jump)) {
-      candidate = normalizePlaybackURL(joinLink(pageURL, candidate));
+      candidate = normalizePlaybackURL(joinLink(page.url || pageURL, candidate));
       if (candidate && isMediaURL(candidate)) {
         return { url: candidate, referer: mediaReferer, headers: playHeaders };
       }
       if (/^https?/i.test(candidate) && !isMediaURL(candidate)) {
         // 跳转到二级播放页：再取一次
         try {
-          const second = await fetchRulePage(rule, candidate, pageURL);
+          const second = (await fetchRulePage(rule, candidate, pageURL)).text;
           const direct = normalizePlaybackURL(jumpValue(second, jump));
           if (direct && isMediaURL(direct)) {
             return { url: direct, referer: candidate, headers: playHeaders };
@@ -644,7 +775,8 @@ async function resolveOne(pageURL, referer, rule) {
   if (media && isMediaURL(media)) {
     return { url: media, referer: mediaReferer, headers: playHeaders };
   }
-  throw new Error('未解析到播放地址');
+  // 页面里连 m3u8/mp4 都没有时，说明这集要二次跳转或站点换了播放器
+  throw new Error('未解析到播放地址（播放页里没有 m3u8/mp4，可能需要「跳转播放链接」或站点换了播放器）');
 }
 
 /** 并发解析其它线路（上限 4），失败的线路自动剔除。 */
